@@ -31,7 +31,8 @@ from cli.utils import *
 from cli.announcements import fetch_announcements, display_announcements
 from cli.stats_handler import StatsCallbackHandler
 from cli.watchlist import app as watchlist_app
-from cli.weekly import weekly_app, schedule_app
+from cli.bot import app as bot_app
+from cli.tasks import app as tasks_app
 
 console = Console()
 
@@ -42,8 +43,8 @@ app = typer.Typer(
 )
 
 app.add_typer(watchlist_app, name="watchlist")
-app.add_typer(weekly_app, name="weekly-run")
-app.add_typer(schedule_app, name="schedule")
+app.add_typer(bot_app, name="bot")
+app.add_typer(tasks_app, name="tasks")
 
 
 # Create a deque to store recent messages with a maximum length
@@ -1224,6 +1225,15 @@ def run_analysis(checkpoint: bool = False):
 
 @app.command()
 def analyze(
+    ticker: Optional[str] = typer.Argument(
+        None,
+        help="Ticker symbol for non-interactive mode, e.g. NVDA. Omit for interactive wizard.",
+    ),
+    date: Optional[str] = typer.Option(
+        None,
+        "--date",
+        help="Analysis date YYYY-MM-DD (non-interactive mode only).",
+    ),
     checkpoint: bool = typer.Option(
         False,
         "--checkpoint",
@@ -1235,11 +1245,144 @@ def analyze(
         help="Delete all saved checkpoints before running (force fresh start).",
     ),
 ):
+    """Analyse a single ticker.  With TICKER runs non-interactively; without it
+    launches the interactive wizard."""
     if clear_checkpoints:
         from tradingagents.graph.checkpointer import clear_all_checkpoints
         n = clear_all_checkpoints(DEFAULT_CONFIG["data_cache_dir"])
         console.print(f"[yellow]Cleared {n} checkpoint(s).[/yellow]")
-    run_analysis(checkpoint=checkpoint)
+
+    if ticker:
+        _run_analyze_noninteractive(ticker.upper(), date, checkpoint)
+    else:
+        run_analysis(checkpoint=checkpoint)
+
+
+def _run_analyze_noninteractive(ticker: str, date: Optional[str], checkpoint: bool) -> None:
+    """Run analysis for a single ticker without user prompts."""
+    from tradingagents.batch.runner import BatchRunner
+    config = DEFAULT_CONFIG.copy()
+    config["checkpoint_enabled"] = checkpoint
+    runner = BatchRunner(config=config)
+    console.print(f"[bold green]Analysing {ticker}[/bold green] on {date or 'latest trading day'}...")
+    result = runner.run_single(ticker, trade_date=date, mode="manual")
+    if result.get("error"):
+        console.print(f"[red]Error:[/red] {result['error']}")
+        raise typer.Exit(1)
+    console.print(f"\n[bold]Rating:[/bold] {result['rating']}")
+    console.print(f"[dim]Report saved to:[/dim] {result['report_path']}")
+    if result.get("pm_decision"):
+        console.print("\n" + result["pm_decision"])
+
+
+@app.command()
+def batch(
+    date: Optional[str] = typer.Option(
+        None,
+        "--date",
+        help="Analysis date YYYY-MM-DD (default: most recent trading day).",
+    ),
+    tickers: Optional[str] = typer.Option(
+        None,
+        "--tickers",
+        help="Comma-separated ticker list. Defaults to watchlist if omitted.",
+    ),
+    no_narrative: bool = typer.Option(
+        False,
+        "--no-narrative",
+        help="Skip the LLM cross-ticker narrative in summary.md.",
+    ),
+):
+    """Run analysis for all watchlist tickers (or a custom --tickers list)."""
+    from tradingagents.batch.runner import BatchRunner
+    config = DEFAULT_CONFIG.copy()
+    config["checkpoint_enabled"] = True
+    runner = BatchRunner(config=config)
+
+    ticker_list = [t.strip().upper() for t in tickers.split(",")] if tickers else None
+    label = ", ".join(ticker_list) if ticker_list else "watchlist"
+    console.print(f"[bold green]Batch analysis:[/bold green] {label} on {date or 'latest trading day'}")
+
+    results, summary_path = runner.run_batch(
+        tickers=ticker_list,
+        trade_date=date,
+        mode="batch",
+        narrative=not no_narrative,
+    )
+    completed = [r for r in results if not r.get("error")]
+    errors = [r for r in results if r.get("error")]
+    console.print(f"\n[bold]Done:[/bold] {len(completed)}/{len(results)} succeeded")
+    for r in completed:
+        console.print(f"  [green]✓[/green] {r['ticker']}: {r['rating']}")
+    for r in errors:
+        console.print(f"  [red]✗[/red] {r['ticker']}: {r['error'][:80]}")
+    console.print(f"\n[dim]Summary:[/dim] {summary_path}")
+
+
+@app.command("scheduled-run")
+def scheduled_run(
+    task_name: str = typer.Argument(..., help="Scheduled task name from scheduled_tasks.yaml"),
+    date: Optional[str] = typer.Option(None, "--date", help="Override analysis date YYYY-MM-DD"),
+):
+    """Run a named scheduled task (called by launchd/crontab)."""
+    from tradingagents.scheduler.tasks import load_tasks
+    from tradingagents.batch.runner import BatchRunner
+    import os, requests as _req, logging as _log
+
+    tasks = {t.name: t for t in load_tasks()}
+    if task_name not in tasks:
+        console.print(f"[red]Unknown task '{task_name}'. Check scheduled_tasks.yaml.[/red]")
+        raise typer.Exit(1)
+
+    task = tasks[task_name]
+    config = DEFAULT_CONFIG.copy()
+    config["checkpoint_enabled"] = True
+    runner = BatchRunner(config=config)
+
+    logger = _log.getLogger(__name__)
+    logger.info("scheduled-run: %s", task_name)
+
+    def _notify(text: str) -> None:
+        token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+        chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+        if token and chat_id:
+            try:
+                _req.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": chat_id, "text": text},
+                    timeout=10,
+                )
+            except Exception as exc:
+                logger.warning("Telegram notify failed: %s", exc)
+
+    if task.is_watchlist():
+        results, summary_path = runner.run_batch(trade_date=date, mode="scheduled", task_name=task_name)
+    else:
+        tickers = task.tickers() or []
+        if len(tickers) == 1:
+            result = runner.run_single(tickers[0], trade_date=date, mode="scheduled", task_name=task_name)
+            results = [result]
+            summary_path = None
+        else:
+            results, summary_path = runner.run_batch(
+                tickers=tickers, trade_date=date, mode="scheduled", task_name=task_name
+            )
+
+    completed = [r for r in results if not r.get("error")]
+    errors = [r for r in results if r.get("error")]
+    lines = [f"📅 Scheduled task: {task_name}",
+             f"✅ {len(completed)}/{len(results)} completed"]
+    for r in completed:
+        lines.append(f"  {r['ticker']}: {r.get('rating','—')}")
+    if errors:
+        lines.append(f"❌ Failed: {', '.join(r['ticker'] for r in errors)}")
+    if summary_path:
+        lines.append(f"Report: {summary_path}")
+    elif results and results[0].get("report_path"):
+        lines.append(f"Report: {results[0]['report_path']}")
+
+    _notify("\n".join(lines))
+    console.print("\n".join(lines))
 
 
 if __name__ == "__main__":
