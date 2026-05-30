@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 import typer
 from dotenv import load_dotenv
@@ -29,6 +30,7 @@ from tradingagents.batch.watchlist import (
     load_watchlist,
     remove_tickers,
     save_watchlist,
+    update_position,
 )
 
 app = typer.Typer(
@@ -45,10 +47,11 @@ def _watchlist_path() -> str:
 
 @app.command("list")
 def list_watchlist() -> None:
-    """Show all tickers in the watchlist."""
+    """Show all tickers in the watchlist with position info."""
     data = load_watchlist(_watchlist_path())
     tickers = data.get("tickers", [])
     analysts = data.get("analysts", [])
+    positions = data.get("positions", {})
 
     if not tickers:
         console.print("[yellow]Watchlist is empty.[/yellow]  Add tickers with [bold]watchlist add TICKER[/bold].")
@@ -57,8 +60,22 @@ def list_watchlist() -> None:
     table = Table(title="Watchlist", box=box.SIMPLE_HEAD, show_header=True, header_style="bold magenta")
     table.add_column("#", style="dim", width=4)
     table.add_column("Ticker", style="cyan bold")
+    table.add_column("Cost/Share", justify="right")
+    table.add_column("Qty", justify="right")
+    table.add_column("Total Cost", justify="right")
+
     for i, ticker in enumerate(tickers, 1):
-        table.add_row(str(i), ticker)
+        pos = positions.get(ticker.upper())
+        if pos and pos.get("cost") and pos.get("qty"):
+            cost = float(pos["cost"])
+            qty = float(pos["qty"])
+            total = cost * qty
+            cost_str = f"${cost:,.2f}"
+            qty_str = f"{qty:,.0f}"
+            total_str = f"${total:,.2f}"
+        else:
+            cost_str = qty_str = total_str = "[dim]NA[/dim]"
+        table.add_row(str(i), ticker, cost_str, qty_str, total_str)
 
     console.print(table)
     console.print(f"[dim]Analysts: {', '.join(analysts)}[/dim]")
@@ -69,10 +86,29 @@ def list_watchlist() -> None:
 def add_cmd(
     tickers: list[str] = typer.Argument(..., help="Ticker symbols to add (e.g. NVDA AAPL MSFT)"),
 ) -> None:
-    """Add one or more tickers to the watchlist."""
-    updated = add_tickers(_watchlist_path(), tickers)
-    added = [t.upper() for t in tickers]
-    console.print(f"[green]✓ Added:[/green] {', '.join(added)}")
+    """Add tickers to the watchlist and optionally record position info."""
+    path = _watchlist_path()
+    updated = add_tickers(path, tickers)
+
+    added_info: list[str] = []
+    for ticker in tickers:
+        ticker = ticker.upper()
+        console.print(f"\n[bold]{ticker}[/bold] — do you currently hold this stock?")
+        holds = typer.confirm("  Holding?", default=False)
+        if holds:
+            cost = typer.prompt("  Average cost per share ($)", prompt_suffix=": ")
+            qty = typer.prompt("  Number of shares", prompt_suffix=": ")
+            try:
+                update_position(path, ticker, float(cost), float(qty))
+                added_info.append(f"{ticker} ({qty} shares @ ${float(cost):.2f})")
+            except ValueError:
+                console.print("[yellow]  Invalid input — position saved as NA.[/yellow]")
+                added_info.append(f"{ticker} (NA)")
+        else:
+            update_position(path, ticker, None, None)
+            added_info.append(f"{ticker} (NA)")
+
+    console.print(f"\n[green]✓ Added:[/green] {', '.join(added_info)}")
     console.print(f"[dim]Watchlist now has {len(updated)} tickers.[/dim]")
 
 
@@ -80,7 +116,7 @@ def add_cmd(
 def remove_cmd(
     tickers: list[str] = typer.Argument(..., help="Ticker symbols to remove"),
 ) -> None:
-    """Remove one or more tickers from the watchlist."""
+    """Remove tickers from the watchlist."""
     updated = remove_tickers(_watchlist_path(), tickers)
     removed = [t.upper() for t in tickers]
     console.print(f"[yellow]Removed:[/yellow] {', '.join(removed)}")
@@ -92,16 +128,14 @@ def edit_cmd() -> None:
     """Open the watchlist YAML file in your default editor ($EDITOR)."""
     path = Path(_watchlist_path()).expanduser()
 
-    # Ensure file exists before opening
     if not path.exists():
-        save_watchlist(str(path), {"tickers": [], "analysts": ["market", "social", "news", "fundamentals"]})
+        save_watchlist(str(path), {"tickers": [], "analysts": ["market", "social", "news", "fundamentals"], "positions": {}})
         console.print(f"[dim]Created empty watchlist at {path}[/dim]")
 
     editor = os.environ.get("EDITOR", "")
     if not editor:
-        # Sensible platform defaults
         if sys.platform == "darwin":
-            editor = "open -t"  # TextEdit
+            editor = "open -t"
         elif sys.platform.startswith("win"):
             editor = "notepad"
         else:

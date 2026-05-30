@@ -18,7 +18,7 @@ from typing import Any, Optional
 import requests
 
 from .queue import JobQueue
-from .commands import COMMANDS
+from .commands import COMMANDS, _split
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,8 @@ class TelegramBot:
         self.job_queue = JobQueue()
         self._offset = 0
         self._running = False
+        # Tracks pending position questions: {chat_id: {ticker, date}}
+        self._pending_positions: dict[str, dict] = {}
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -143,7 +145,10 @@ class TelegramBot:
         text: str = message.get("text", "").strip()
 
         if not text.startswith("/"):
-            return  # ignore non-commands
+            # Handle pending position reply
+            if str(chat_id) in self._pending_positions:
+                self._handle_position_reply(message, text)
+            return
 
         # Whitelist check
         if self.allowed_ids and chat_id not in self.allowed_ids:
@@ -165,3 +170,61 @@ class TelegramBot:
         except Exception as exc:
             logger.error("Handler %s raised: %s", raw_cmd, exc, exc_info=True)
             self.send_plain(chat_id, f"Internal error in {raw_cmd}: {exc}")
+
+    def _handle_position_reply(self, message: dict, text: str) -> None:
+        """Process a position-info reply that follows a /analyze prompt."""
+        from tradingagents.batch.runner import BatchRunner
+        chat_id = str(message.get("chat", {}).get("id", ""))
+        pending = self._pending_positions.pop(chat_id, None)
+        if not pending:
+            return
+
+        ticker = pending["ticker"]
+        date_str = pending.get("date")
+        date_label = date_str or "latest trading day"
+
+        # Parse reply
+        position: dict | None = None
+        if text.strip().lower() not in ("no", "n", "没有", "无"):
+            parts = text.strip().split()
+            try:
+                cost = float(parts[0])
+                qty = float(parts[1]) if len(parts) > 1 else None
+                if qty is None:
+                    raise ValueError("qty missing")
+                position = {"cost": cost, "qty": qty}
+            except (ValueError, IndexError):
+                self.send_plain(
+                    chat_id,
+                    f"格式不对，请回复「成本价 数量」（如 125.50 100）或 no。"
+                    f"已取消 {ticker} 分析，请重新发送 /analyze {ticker}。"
+                )
+                return
+
+        # Confirm and queue
+        if position:
+            pos_label = f"{position['qty']:,.0f} 股 @ ${position['cost']:,.2f}"
+        else:
+            pos_label = "未持仓"
+
+        runner = BatchRunner(config=self.config)
+
+        def run():
+            return runner.run_single(ticker, trade_date=date_str, mode="manual", position=position)
+
+        def on_complete(job, result, error):
+            if error or (result and result.get("error")):
+                err_msg = str(error or result.get("error", "unknown error"))
+                self.send_plain(chat_id, f"❌ {ticker} 分析失败：{err_msg[:300]}")
+                return
+            pm = result.get("pm_decision", "") or ""
+            rating = result.get("rating", "—")
+            header = f"📊 {ticker} · {result.get('date', '')} · 评级：{rating}\n\n"
+            for chunk in _split(header + pm):
+                self.send_plain(chat_id, chunk)
+
+        _, pos = self.job_queue.add(f"{ticker} {date_label} [{pos_label}]", run, on_complete)
+        self.send_plain(
+            chat_id,
+            f"✓ {ticker} 已加入队列（第 {pos} 位），持仓：{pos_label}。分析完成后发送结果。"
+        )

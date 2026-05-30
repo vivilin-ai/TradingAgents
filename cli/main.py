@@ -1259,13 +1259,17 @@ def analyze(
 
 
 def _run_analyze_noninteractive(ticker: str, date: Optional[str], checkpoint: bool) -> None:
-    """Run analysis for a single ticker without user prompts."""
+    """Run analysis for a single ticker without the interactive wizard."""
     from tradingagents.batch.runner import BatchRunner
     config = DEFAULT_CONFIG.copy()
     config["checkpoint_enabled"] = checkpoint
     runner = BatchRunner(config=config)
-    console.print(f"[bold green]Analysing {ticker}[/bold green] on {date or 'latest trading day'}...")
-    result = runner.run_single(ticker, trade_date=date, mode="manual")
+
+    # Ask about current position before running
+    position = _prompt_position(ticker)
+
+    console.print(f"\n[bold green]Analysing {ticker}[/bold green] on {date or 'latest trading day'}...")
+    result = runner.run_single(ticker, trade_date=date, mode="manual", position=position)
     if result.get("error"):
         console.print(f"[red]Error:[/red] {result['error']}")
         raise typer.Exit(1)
@@ -1273,6 +1277,24 @@ def _run_analyze_noninteractive(ticker: str, date: Optional[str], checkpoint: bo
     console.print(f"[dim]Report saved to:[/dim] {result['report_path']}")
     if result.get("pm_decision"):
         console.print("\n" + result["pm_decision"])
+
+
+def _prompt_position(ticker: str) -> Optional[dict]:
+    """Interactively ask the user about their current holding in ticker.
+
+    Returns dict with {cost, qty} or None if not holding.
+    """
+    console.print(f"\n[bold]Holding status for {ticker}[/bold]")
+    holds = typer.confirm(f"  Do you currently hold {ticker}?", default=False)
+    if not holds:
+        return None
+    while True:
+        try:
+            cost = float(typer.prompt("  Average cost per share ($)"))
+            qty = float(typer.prompt("  Number of shares"))
+            return {"cost": cost, "qty": qty}
+        except ValueError:
+            console.print("[red]  Invalid input, please enter numbers only.[/red]")
 
 
 @app.command()

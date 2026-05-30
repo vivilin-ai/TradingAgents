@@ -27,7 +27,7 @@ DEFAULT_CONFIG = {
     "checkpoint_enabled": False,
 
     # Output language for analyst reports and final decision
-    "output_language": "English",
+    "output_language": "Chinese",
 
     # Debate and discussion settings
     "max_debate_rounds": 1,

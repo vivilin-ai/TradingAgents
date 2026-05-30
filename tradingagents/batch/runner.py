@@ -128,6 +128,7 @@ class BatchRunner:
         trade_date: Optional[str] = None,
         mode: str = "manual",
         task_name: Optional[str] = None,
+        position: Optional[dict] = None,
         on_complete: Optional[Callable[[dict], None]] = None,
     ) -> dict[str, Any]:
         """Analyse a single ticker.
@@ -137,15 +138,20 @@ class BatchRunner:
             trade_date:  Date string YYYY-MM-DD; defaults to last trading day.
             mode:        "manual" | "scheduled".  Determines output sub-directory.
             task_name:   Required when mode=="scheduled".
+            position:    Optional dict with keys ``cost`` (float) and ``qty``
+                         (float) representing the user's current holding.  When
+                         None, the PM is told the user has no position.
             on_complete: Optional callback called with the result dict when done.
 
         Returns:
             Result dict with keys: ticker, date, rating, final_state,
             report_path, pm_decision, error.
         """
+        from .watchlist import format_position_context
         trade_date = _resolve_date(trade_date)
         out_dir = _output_dir(self.config, mode, trade_date, ticker=ticker, task_name=task_name)
-        result = self._run_one(ticker, trade_date, out_dir)
+        extra_context = format_position_context(ticker, position)
+        result = self._run_one(ticker, trade_date, out_dir, extra_context=extra_context)
         if on_complete:
             try:
                 on_complete(result)
@@ -240,15 +246,20 @@ class BatchRunner:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _run_one(self, ticker: str, trade_date: str, out_dir: Path) -> dict[str, Any]:
+    def _run_one(
+        self,
+        ticker: str,
+        trade_date: str,
+        out_dir: Path,
+        extra_context: str = "",
+    ) -> dict[str, Any]:
         """Run a single ticker; return result dict even on failure."""
         try:
-            cfg = self.config
             graph = TradingAgentsGraph(
                 selected_analysts=self._analysts(),
-                config=cfg,
+                config=self.config,
             )
-            final_state, rating = graph.propagate(ticker, trade_date)
+            final_state, rating = graph.propagate(ticker, trade_date, extra_context=extra_context)
 
             out_dir.mkdir(parents=True, exist_ok=True)
             report_md = _build_report(final_state, ticker, trade_date)

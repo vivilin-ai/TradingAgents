@@ -85,24 +85,14 @@ def cmd_analyze(bot: "TelegramBot", message: dict[str, Any], args: list[str]) ->
         bot.send(chat_id, "Please specify a ticker, e.g. /analyze NVDA")
         return
 
-    date_label = date_str or "latest trading day"
-    runner = BatchRunner(config=bot.config)
-
-    def run():
-        return runner.run_single(ticker, trade_date=date_str, mode="manual")
-
-    def on_complete(job, result, error):
-        if error or (result and result.get("error")):
-            err_msg = str(error or result.get("error", "unknown error"))
-            bot.send(chat_id, f"❌ *{ticker}* analysis failed:\n`{err_msg[:300]}`")
-            return
-        pm = result.get("pm_decision", "") or ""
-        rating = result.get("rating", "—")
-        header = f"📊 *{ticker}* · {result.get('date', '')} · Rating: *{rating}*\n\n"
-        _send_long(bot, chat_id, header + pm)
-
-    _, pos = bot.job_queue.add(f"{ticker} {date_label}", run, on_complete)
-    bot.send(chat_id, f"✓ *{ticker}* queued (position {pos}). I'll send the result when done.")
+    # Ask about position before queuing
+    bot._pending_positions[str(chat_id)] = {"ticker": ticker, "date": date_str}
+    bot.send(
+        chat_id,
+        f"📋 *{ticker}* — 你目前持有该股票吗？\n\n"
+        f"• 如持有，请回复：`成本价 数量` （例：`125\\.50 100`）\n"
+        f"• 如未持有，请回复：`no`",
+    )
 
 
 def cmd_batch(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> None:
@@ -172,13 +162,46 @@ def cmd_list(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> No
 
 
 def cmd_add(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> None:
+    """Add ticker(s) to watchlist.
+
+    Formats:
+      /add NVDA                   → no position
+      /add NVDA 125.50 100        → with cost and qty
+      /add AAPL MSFT GOOG         → multiple, no position
+    """
+    from tradingagents.batch.watchlist import update_position
     chat_id = message["chat"]["id"]
     if not args:
-        bot.send(chat_id, "Usage: /add TICKER \\[TICKER …\\]")
+        bot.send_plain(chat_id, "用法：\n/add TICKER\n/add TICKER 成本价 数量\n例：/add NVDA 125.50 100")
         return
-    updated = add_tickers(bot.config["watchlist_path"], args)
-    added = [t.upper() for t in args]
-    bot.send(chat_id, f"✓ Added: {', '.join(added)}\\. Watchlist now has {len(updated)} tickers\\.")
+
+    # Detect if second arg looks like a number (position info for single ticker)
+    ticker = args[0].upper()
+    position_lines: list[str] = []
+
+    if len(args) >= 3:
+        try:
+            cost = float(args[1])
+            qty = float(args[2])
+            add_tickers(bot.config["watchlist_path"], [ticker])
+            update_position(bot.config["watchlist_path"], ticker, cost, qty)
+            position_lines.append(f"{ticker}：{qty:,.0f} 股 @ ${cost:,.2f}")
+        except ValueError:
+            # Treat all args as tickers
+            tickers = [a.upper() for a in args]
+            add_tickers(bot.config["watchlist_path"], tickers)
+            for t in tickers:
+                position_lines.append(f"{t}：NA")
+    else:
+        tickers = [a.upper() for a in args]
+        add_tickers(bot.config["watchlist_path"], tickers)
+        for t in tickers:
+            position_lines.append(f"{t}：NA")
+
+    data = bot.config["watchlist_path"]
+    from tradingagents.batch.watchlist import load_watchlist
+    total = len(load_watchlist(data)["tickers"])
+    bot.send_plain(chat_id, "✓ 已添加：\n" + "\n".join(position_lines) + f"\n\n自选列表共 {total} 只股票")
 
 
 def cmd_remove(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> None:
