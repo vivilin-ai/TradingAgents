@@ -123,6 +123,69 @@ def remove_cmd(
     console.print(f"[dim]Watchlist now has {len(updated)} tickers.[/dim]")
 
 
+@app.command("position")
+def position_cmd(
+    ticker: str = typer.Argument(..., help="Ticker symbol, e.g. NVDA"),
+    cost: Optional[float] = typer.Option(None, "--cost", help="Average cost per share"),
+    qty: Optional[float] = typer.Option(None, "--qty", help="Number of shares held"),
+    clear: bool = typer.Option(False, "--clear", help="Clear position (set to NA)"),
+) -> None:
+    """Update or clear the position for a watchlist ticker.
+
+    Without flags, launches an interactive prompt.
+
+    Examples:
+
+      tradingagents watchlist position NVDA --cost 125.50 --qty 100
+
+      tradingagents watchlist position NVDA --clear
+    """
+    path = _watchlist_path()
+    ticker = ticker.upper()
+
+    # Verify ticker is in watchlist
+    data = load_watchlist(path)
+    if ticker not in [t.upper() for t in data["tickers"]]:
+        console.print(f"[red]{ticker} is not in your watchlist.[/red] Add it first with [bold]watchlist add {ticker}[/bold].")
+        raise typer.Exit(1)
+
+    if clear:
+        update_position(path, ticker, None, None)
+        console.print(f"[yellow]✓ {ticker} position cleared (NA).[/yellow]")
+        return
+
+    if cost is not None and qty is not None:
+        update_position(path, ticker, cost, qty)
+        total = cost * qty
+        console.print(f"[green]✓ {ticker}:[/green] {qty:,.0f} 股 @ ${cost:,.2f}（总成本 ${total:,.2f}）")
+        return
+
+    # Interactive mode
+    current = data.get("positions", {}).get(ticker)
+    if current and current.get("cost") and current.get("qty"):
+        console.print(f"[dim]当前持仓：{current['qty']:,.0f} 股 @ ${current['cost']:,.2f}[/dim]")
+    else:
+        console.print(f"[dim]当前持仓：NA[/dim]")
+
+    holds = typer.confirm(f"是否持有 {ticker}？", default=bool(current))
+    if not holds:
+        update_position(path, ticker, None, None)
+        console.print(f"[yellow]✓ {ticker} position cleared (NA).[/yellow]")
+        return
+
+    while True:
+        try:
+            new_cost = float(typer.prompt("  平均成本价 ($)"))
+            new_qty = float(typer.prompt("  持有数量（股）"))
+            break
+        except ValueError:
+            console.print("[red]请输入数字。[/red]")
+
+    update_position(path, ticker, new_cost, new_qty)
+    total = new_cost * new_qty
+    console.print(f"[green]✓ {ticker}:[/green] {new_qty:,.0f} 股 @ ${new_cost:,.2f}（总成本 ${total:,.2f}）")
+
+
 @app.command("edit")
 def edit_cmd() -> None:
     """Open the watchlist YAML file in your default editor ($EDITOR)."""

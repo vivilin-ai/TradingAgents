@@ -60,15 +60,17 @@ def _parse_date(args: list[str]) -> tuple[str | None, list[str]]:
 # ── Handlers ──────────────────────────────────────────────────────────────────
 
 def cmd_help(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> None:
-    bot.send(message["chat"]["id"], (
-        "📈 *TradingAgents Bot*\n\n"
-        "/analyze TICKER \\[--date YYYY-MM-DD\\] — single-stock analysis\n"
-        "/batch \\[--date YYYY-MM-DD\\] — analyse full watchlist\n"
-        "/list — show watchlist\n"
-        "/add TICKER \\[TICKER …\\] — add to watchlist\n"
-        "/remove TICKER \\[TICKER …\\] — remove from watchlist\n"
-        "/status — current job queue\n"
-        "/help — this message"
+    bot.send_plain(message["chat"]["id"], (
+        "📈 TradingAgents Bot\n\n"
+        "/analyze TICKER [--date YYYY-MM-DD] — 分析单只股票\n"
+        "/batch [--date YYYY-MM-DD] — 分析全部自选列表\n"
+        "/list — 查看自选列表及持仓\n"
+        "/add TICKER [成本价 数量] — 加入自选（可附持仓）\n"
+        "/remove TICKER — 从自选删除\n"
+        "/position TICKER [成本价 数量] — 查看/更新持仓\n"
+        "/position TICKER clear — 清空持仓\n"
+        "/status — 查看当前任务进度\n"
+        "/help — 帮助"
     ))
 
 
@@ -214,6 +216,54 @@ def cmd_remove(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> 
     bot.send(chat_id, f"Removed: {', '.join(removed)}\\. Watchlist now has {len(updated)} tickers\\.")
 
 
+def cmd_position(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> None:
+    """Update or clear a position.
+
+    /position NVDA 125.50 100   → set cost and qty
+    /position NVDA clear        → clear (set to NA)
+    /position NVDA              → show current
+    """
+    from tradingagents.batch.watchlist import update_position, get_position, load_watchlist
+    chat_id = message["chat"]["id"]
+
+    if not args:
+        bot.send_plain(chat_id, "用法：\n/position TICKER 成本价 数量\n/position TICKER clear\n例：/position NVDA 125.50 100")
+        return
+
+    ticker = args[0].upper()
+    data = load_watchlist(bot.config["watchlist_path"])
+    if ticker not in [t.upper() for t in data["tickers"]]:
+        bot.send_plain(chat_id, f"{ticker} 不在自选列表中，请先用 /add {ticker} 添加。")
+        return
+
+    # Clear
+    if len(args) >= 2 and args[1].lower() in ("clear", "清空", "0", "no", "na"):
+        update_position(bot.config["watchlist_path"], ticker, None, None)
+        bot.send_plain(chat_id, f"✓ {ticker} 持仓已清空（NA）")
+        return
+
+    # Set position
+    if len(args) >= 3:
+        try:
+            cost = float(args[1])
+            qty = float(args[2])
+            update_position(bot.config["watchlist_path"], ticker, cost, qty)
+            total = cost * qty
+            bot.send_plain(chat_id, f"✓ {ticker} 持仓已更新：{qty:,.0f} 股 @ ${cost:,.2f}（总成本 ${total:,.2f}）")
+            return
+        except ValueError:
+            bot.send_plain(chat_id, "格式错误，请用：/position NVDA 125.50 100")
+            return
+
+    # Show current
+    pos = get_position(bot.config["watchlist_path"], ticker)
+    if pos and pos.get("cost") and pos.get("qty"):
+        total = pos["cost"] * pos["qty"]
+        bot.send_plain(chat_id, f"📋 {ticker} 当前持仓：{pos['qty']:,.0f} 股 @ ${pos['cost']:,.2f}（总成本 ${total:,.2f}）\n\n更新：/position {ticker} 成本价 数量\n清空：/position {ticker} clear")
+    else:
+        bot.send_plain(chat_id, f"📋 {ticker}：未持仓（NA）\n\n设置持仓：/position {ticker} 成本价 数量")
+
+
 def cmd_status(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> None:
     chat_id = message["chat"]["id"]
     status = bot.job_queue.get_status()
@@ -242,11 +292,12 @@ def cmd_status(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> 
 # ── Dispatch table ────────────────────────────────────────────────────────────
 
 COMMANDS: dict[str, Any] = {
-    "/help":    cmd_help,
-    "/analyze": cmd_analyze,
-    "/batch":   cmd_batch,
-    "/list":    cmd_list,
-    "/add":     cmd_add,
-    "/remove":  cmd_remove,
-    "/status":  cmd_status,
+    "/help":     cmd_help,
+    "/analyze":  cmd_analyze,
+    "/batch":    cmd_batch,
+    "/list":     cmd_list,
+    "/add":      cmd_add,
+    "/remove":   cmd_remove,
+    "/position": cmd_position,
+    "/status":   cmd_status,
 }
