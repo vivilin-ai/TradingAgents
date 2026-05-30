@@ -1296,7 +1296,6 @@ def batch(
     """Run analysis for all watchlist tickers (or a custom --tickers list)."""
     from tradingagents.batch.runner import BatchRunner
     config = DEFAULT_CONFIG.copy()
-    config["checkpoint_enabled"] = True
     runner = BatchRunner(config=config)
 
     ticker_list = [t.strip().upper() for t in tickers.split(",")] if tickers else None
@@ -1336,7 +1335,6 @@ def scheduled_run(
 
     task = tasks[task_name]
     config = DEFAULT_CONFIG.copy()
-    config["checkpoint_enabled"] = True
     runner = BatchRunner(config=config)
 
     logger = _log.getLogger(__name__)

@@ -243,7 +243,7 @@ class BatchRunner:
     def _run_one(self, ticker: str, trade_date: str, out_dir: Path) -> dict[str, Any]:
         """Run a single ticker; return result dict even on failure."""
         try:
-            cfg = {**self.config, "checkpoint_enabled": True}
+            cfg = self.config
             graph = TradingAgentsGraph(
                 selected_analysts=self._analysts(),
                 config=cfg,
