@@ -71,6 +71,17 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
             "Portfolio Manager",
         )
 
+        from tradingagents.agents.utils.agent_utils import verify_report_hallucination
+        ref_price = state.get("reference_price", 0.0)
+        ticker = state.get("company_of_interest", "")
+        
+        # In final report, we perform strict price check
+        if verify_report_hallucination(final_trade_decision, ref_price, ticker=ticker, strict=True):
+            retry_val = 0
+        else:
+            final_trade_decision = ""
+            retry_val = state.get("retry_count", 0) + 1
+
         new_risk_debate_state = {
             "judge_decision": final_trade_decision,
             "history": risk_debate_state["history"],
@@ -87,6 +98,7 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
         return {
             "risk_debate_state": new_risk_debate_state,
             "final_trade_decision": final_trade_decision,
+            "retry_count": retry_val
         }
 
     return portfolio_manager_node

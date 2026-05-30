@@ -24,10 +24,11 @@ def create_fundamentals_analyst(llm):
         ]
 
         system_message = (
-            "You are a researcher tasked with analyzing fundamental information over the past week about a company. Please write a comprehensive report of the company's fundamental information such as financial documents, company profile, basic company financials, and company financial history to gain a full view of the company's fundamental information to inform traders. Make sure to include as much detail as possible. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
+            "You are a researcher tasked with analyzing fundamental information over the past week about a company. Please write a comprehensive report of the company's fundamental information such as financial documents, company profile, basic company financials, and company financial history to gain a full view of the company's fundamental information to inform traders."
+            + "\n\n**CRITICAL INSTRUCTIONS**:\n1. DO NOT output any \"plan\", \"thoughts\", or \"intentions\" (e.g., \"I will first fetch fundamentals...\").\n2. If you need data, your FIRST and ONLY response must be the tool call(s).\n3. ONLY provide your final analysis report AFTER you have received the tool outputs.\n4. Your report MUST contain specific financial metrics (Revenue, EPS, Net Income, etc.) found in the statements."
             + " Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."
             + " Use the available tools: `get_fundamentals` for comprehensive company analysis, `get_balance_sheet`, `get_cashflow`, and `get_income_statement` for specific financial statements."
-            + get_language_instruction(),
+            + get_language_instruction()
         )
 
         prompt = ChatPromptTemplate.from_messages(
@@ -53,17 +54,25 @@ def create_fundamentals_analyst(llm):
         prompt = prompt.partial(instrument_context=instrument_context)
 
         chain = prompt | llm.bind_tools(tools)
-
         result = chain.invoke(state["messages"])
 
         report = ""
+        outputs = {"messages": [result], "retry_count": 0}
 
-        if len(result.tool_calls) == 0:
-            report = result.content
+        if len(getattr(result, "tool_calls", [])) == 0:
+            from tradingagents.agents.utils.agent_utils import verify_report_hallucination
+            ref_price = state.get("reference_price", 0.0)
+            ticker = state.get("company_of_interest", "")
+            
+            if verify_report_hallucination(result.content, ref_price, ticker=ticker, strict=False):
+                report = result.content
+            else:
+                report = ""
+                # Drop this "plan" message by returning an empty list to avoid state pollution
+                outputs["messages"] = []
+                outputs["retry_count"] = state.get("retry_count", 0) + 1
 
-        return {
-            "messages": [result],
-            "fundamentals_report": report,
-        }
+        outputs["fundamentals_report"] = report
+        return outputs
 
     return fundamentals_analyst_node

@@ -30,6 +30,8 @@ from cli.models import AnalystType
 from cli.utils import *
 from cli.announcements import fetch_announcements, display_announcements
 from cli.stats_handler import StatsCallbackHandler
+from cli.watchlist import app as watchlist_app
+from cli.weekly import weekly_app, schedule_app
 
 console = Console()
 
@@ -38,6 +40,10 @@ app = typer.Typer(
     help="TradingAgents CLI: Multi-Agents LLM Financial Trading Framework",
     add_completion=True,  # Enable shell completion
 )
+
+app.add_typer(watchlist_app, name="watchlist")
+app.add_typer(weekly_app, name="weekly-run")
+app.add_typer(schedule_app, name="schedule")
 
 
 # Create a deque to store recent messages with a maximum length
@@ -614,15 +620,15 @@ def get_user_selections():
 
 def get_ticker():
     """Get ticker symbol from user input."""
-    return typer.prompt("", default="SPY")
+    return typer.prompt("Ticker", default="SPY").strip().upper()
 
 
 def get_analysis_date():
     """Get the analysis date from user input."""
     while True:
         date_str = typer.prompt(
-            "", default=datetime.datetime.now().strftime("%Y-%m-%d")
-        )
+            "Date", default=datetime.datetime.now().strftime("%Y-%m-%d")
+        ).strip()
         try:
             # Validate date format and ensure it's not in the future
             analysis_date = datetime.datetime.strptime(date_str, "%Y-%m-%d")
@@ -979,6 +985,8 @@ def run_analysis(checkpoint: bool = False):
         @wraps(func)
         def wrapper(*args, **kwargs):
             func(*args, **kwargs)
+            if not obj.messages:
+                return
             timestamp, message_type, content = obj.messages[-1]
             content = content.replace("\n", " ")  # Replace newlines with spaces
             with open(log_file, "a", encoding="utf-8") as f:
@@ -990,6 +998,8 @@ def run_analysis(checkpoint: bool = False):
         @wraps(func)
         def wrapper(*args, **kwargs):
             func(*args, **kwargs)
+            if not obj.tool_calls:
+                return
             timestamp, tool_name, args = obj.tool_calls[-1]
             args_str = ", ".join(f"{k}={v}" for k, v in args.items())
             with open(log_file, "a", encoding="utf-8") as f:
@@ -1153,8 +1163,17 @@ def run_analysis(checkpoint: bool = False):
             trace.append(chunk)
 
         # Get final state and decision
+        if not trace:
+            console.print("[red]Error: Graph execution failed to produce any results.[/red]")
+            return
+        
         final_state = trace[-1]
-        decision = graph.process_signal(final_state["final_trade_decision"])
+        decision_str = final_state.get("final_trade_decision")
+        if not decision_str:
+            console.print("[red]Error: Graph execution completed without a final decision.[/red]")
+            return
+            
+        decision = graph.process_signal(decision_str)
 
         # Update all agent statuses to completed
         for agent in message_buffer.agent_status:
@@ -1173,6 +1192,12 @@ def run_analysis(checkpoint: bool = False):
 
     # Post-analysis prompts (outside Live context for clean interaction)
     console.print("\n[bold cyan]Analysis Complete![/bold cyan]\n")
+
+    # Prompt for ticker and date
+    console.print("\n[bold cyan]Step 1: Core Configuration[/bold cyan]")
+    ticker = typer.prompt("Enter ticker symbol", default="SPY").strip().upper()
+    if not ticker:
+        ticker = "SPY"
 
     # Prompt to save report
     save_choice = typer.prompt("Save report?", default="Y").strip().upper()

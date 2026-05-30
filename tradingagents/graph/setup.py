@@ -122,7 +122,7 @@ class GraphSetup:
             workflow.add_conditional_edges(
                 current_analyst,
                 getattr(self.conditional_logic, f"should_continue_{analyst_type}"),
-                [current_tools, current_clear],
+                [current_tools, current_clear, current_analyst],
             )
             workflow.add_edge(current_tools, current_analyst)
 
@@ -177,6 +177,13 @@ class GraphSetup:
             },
         )
 
-        workflow.add_edge("Portfolio Manager", END)
+        workflow.add_conditional_edges(
+            "Portfolio Manager",
+            self.conditional_logic.should_continue_portfolio,
+            {
+                "Portfolio Manager": "Portfolio Manager",
+                END: END,
+            },
+        )
 
         return workflow

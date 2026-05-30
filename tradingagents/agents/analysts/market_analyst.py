@@ -44,7 +44,14 @@ Volatility Indicators:
 Volume-Based Indicators:
 - vwma: VWMA: A moving average weighted by volume. Usage: Confirm trends by integrating price action with volume data. Tips: Watch for skewed results from volume spikes; use in combination with other volume analyses.
 
-- Select indicators that provide diverse and complementary information. Avoid redundancy (e.g., do not select both rsi and stochrsi). Also briefly explain why they are suitable for the given market context. When you tool call, please use the exact name of the indicators provided above as they are defined parameters, otherwise your call will fail. Please make sure to call get_stock_data first to retrieve the CSV that is needed to generate indicators. Then use get_indicators with the specific indicator names. Write a very detailed and nuanced report of the trends you observe. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."""
+**CRITICAL INSTRUCTIONS**:
+1. DO NOT output any "plan", "thoughts", or "intentions" (e.g., "I will first fetch data..."). 
+2. If you need data, your FIRST and ONLY response must be the tool call(s).
+3. ONLY provide your final analysis report AFTER you have received the tool outputs.
+4. Your report MUST start with a "Data Summary" section explicitly stating the Ticker, Analysis Date, and latest Close price found in the tool output.
+
+Write a very detailed and nuanced report of the trends you observe. Provide specific, actionable insights with supporting evidence to help traders make informed decisions.
+"""
             + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
             + get_language_instruction()
         )
@@ -76,13 +83,25 @@ Volume-Based Indicators:
         result = chain.invoke(state["messages"])
 
         report = ""
-
-        if len(result.tool_calls) == 0:
-            report = result.content
-
-        return {
-            "messages": [result],
-            "market_report": report,
-        }
+        # Only treat as a report if there are NO tool calls
+        outputs = {"messages": [result], "retry_count": 0} # Default reset retry count on success
+        
+        if len(getattr(result, "tool_calls", [])) == 0:
+            from tradingagents.agents.utils.agent_utils import verify_report_hallucination
+            ref_price = state.get("reference_price", 0.0)
+            ticker = state.get("company_of_interest", "")
+            
+            if verify_report_hallucination(result.content, ref_price, ticker=ticker):
+                report = result.content
+            else:
+                # Hallucination or plan - ignore it
+                report = ""
+                # Drop this "plan" message by returning an empty list to avoid state pollution
+                outputs["messages"] = []
+                # Increment retry count
+                outputs["retry_count"] = state.get("retry_count", 0) + 1
+        
+        outputs["market_report"] = report
+        return outputs
 
     return market_analyst_node

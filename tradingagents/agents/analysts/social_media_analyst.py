@@ -13,7 +13,8 @@ def create_social_media_analyst(llm):
         ]
 
         system_message = (
-            "You are a social media and company specific news researcher/analyst tasked with analyzing social media posts, recent company news, and public sentiment for a specific company over the past week. You will be given a company's name your objective is to write a comprehensive long report detailing your analysis, insights, and implications for traders and investors on this company's current state after looking at social media and what people are saying about that company, analyzing sentiment data of what people feel each day about the company, and looking at recent company news. Use the get_news(query, start_date, end_date) tool to search for company-specific news and social media discussions. Try to look at all sources possible from social media to sentiment to news. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
+            "You are a social media and company specific news researcher/analyst tasked with analyzing social media posts, recent company news, and public sentiment for a specific company over the past week."
+            + "\n\n**CRITICAL INSTRUCTIONS**:\n1. DO NOT output any \"plan\", \"thoughts\", or \"intentions\" (e.g., \"I will search for social media posts...\").\n2. If you need data, your FIRST and ONLY response must be the tool call(s).\n3. ONLY provide your final analysis report AFTER you have received the tool outputs.\n4. Your report MUST summarize actual public sentiment and social trends found in the data."
             + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
             + get_language_instruction()
         )
@@ -41,17 +42,25 @@ def create_social_media_analyst(llm):
         prompt = prompt.partial(instrument_context=instrument_context)
 
         chain = prompt | llm.bind_tools(tools)
-
         result = chain.invoke(state["messages"])
 
         report = ""
+        outputs = {"messages": [result], "retry_count": 0}
 
-        if len(result.tool_calls) == 0:
-            report = result.content
+        if len(getattr(result, "tool_calls", [])) == 0:
+            from tradingagents.agents.utils.agent_utils import verify_report_hallucination
+            ref_price = state.get("reference_price", 0.0)
+            ticker = state.get("company_of_interest", "")
+            
+            if verify_report_hallucination(result.content, ref_price, ticker=ticker, strict=False):
+                report = result.content
+            else:
+                report = ""
+                # Drop this "plan" message by returning an empty list to avoid state pollution
+                outputs["messages"] = []
+                outputs["retry_count"] = state.get("retry_count", 0) + 1
 
-        return {
-            "messages": [result],
-            "sentiment_report": report,
-        }
+        outputs["sentiment_report"] = report
+        return outputs
 
     return social_media_analyst_node

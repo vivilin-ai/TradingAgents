@@ -47,4 +47,26 @@ DEFAULT_CONFIG = {
     "tool_vendors": {
         # Example: "get_stock_data": "alpha_vantage",  # Override category default
     },
+    # ── Watchlist & weekly batch ──────────────────────────────────────────────
+    "watchlist_path": os.getenv(
+        "TRADINGAGENTS_WATCHLIST_PATH",
+        os.path.join(_TRADINGAGENTS_HOME, "watchlist.yaml"),
+    ),
+    # Root directory for weekly batch reports.  Relative paths are resolved
+    # from the current working directory at run time.
+    "weekly_reports_dir": os.getenv("TRADINGAGENTS_WEEKLY_REPORTS_DIR", "reports/weekly"),
+    # When True, the weekly summary includes an LLM-generated cross-ticker
+    # narrative (themes, divergences, industry observations).  Disable with
+    # --no-narrative or by setting this to False.
+    "weekly_summary_narrative": True,
+    # ── Notifications ─────────────────────────────────────────────────────────
+    # "telegram" sends a Telegram Bot message when weekly-run completes.
+    # "none" disables all notifications.
+    "notifier": "none",
+    # ── Weekly schedule (read by `tradingagents schedule install`) ────────────
+    "weekly_schedule": {
+        "day": "monday",   # monday … sunday
+        "time": "09:00",   # 24-hour HH:MM
+        "timezone": "local",
+    },
 }

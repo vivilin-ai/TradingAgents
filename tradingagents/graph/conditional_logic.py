@@ -14,33 +14,70 @@ class ConditionalLogic:
     def should_continue_market(self, state: AgentState):
         """Determine if market analysis should continue."""
         messages = state["messages"]
+        if not messages:
+            return "Msg Clear Market"
+        
         last_message = messages[-1]
-        if last_message.tool_calls:
+        
+        # If the model called a tool, go to tools
+        if getattr(last_message, "tool_calls", []):
             return "tools_market"
+        
+        # If the model didn't call a tool, check if it produced a valid report
+        # If report is empty (from our check in market_analyst_node), it's a plan/hallucination.
+        # We force it to retry the node, but only up to 3 times.
+        if not state.get("market_report"):
+            if state.get("retry_count", 0) < 3:
+                return "Market Analyst"
+            else:
+                # Max retries reached, skip this analyst to avoid infinite loop
+                return "Msg Clear Market"
+            
         return "Msg Clear Market"
 
     def should_continue_social(self, state: AgentState):
         """Determine if social media analysis should continue."""
         messages = state["messages"]
+        if not messages:
+            return "Msg Clear Social"
         last_message = messages[-1]
-        if last_message.tool_calls:
+        if getattr(last_message, "tool_calls", []):
             return "tools_social"
+        if not state.get("sentiment_report"):
+            if state.get("retry_count", 0) < 3:
+                return "Social Analyst"
+            else:
+                return "Msg Clear Social"
         return "Msg Clear Social"
 
     def should_continue_news(self, state: AgentState):
         """Determine if news analysis should continue."""
         messages = state["messages"]
+        if not messages:
+            return "Msg Clear News"
         last_message = messages[-1]
-        if last_message.tool_calls:
+        if getattr(last_message, "tool_calls", []):
             return "tools_news"
+        if not state.get("news_report"):
+            if state.get("retry_count", 0) < 3:
+                return "News Analyst"
+            else:
+                return "Msg Clear News"
         return "Msg Clear News"
 
     def should_continue_fundamentals(self, state: AgentState):
         """Determine if fundamentals analysis should continue."""
         messages = state["messages"]
+        if not messages:
+            return "Msg Clear Fundamentals"
         last_message = messages[-1]
-        if last_message.tool_calls:
+        if getattr(last_message, "tool_calls", []):
             return "tools_fundamentals"
+        if not state.get("fundamentals_report"):
+            if state.get("retry_count", 0) < 3:
+                return "Fundamentals Analyst"
+            else:
+                return "Msg Clear Fundamentals"
         return "Msg Clear Fundamentals"
 
     def should_continue_debate(self, state: AgentState) -> str:
@@ -65,3 +102,13 @@ class ConditionalLogic:
         if state["risk_debate_state"]["latest_speaker"].startswith("Conservative"):
             return "Neutral Analyst"
         return "Aggressive Analyst"
+
+    def should_continue_portfolio(self, state: AgentState) -> str:
+        """Determine if the portfolio manager needs to retry due to hallucination."""
+        from langgraph.graph import END
+        if not state.get("final_trade_decision"):
+            if state.get("retry_count", 0) < 3:
+                return "Portfolio Manager"
+            else:
+                return END
+        return END

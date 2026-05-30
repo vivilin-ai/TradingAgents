@@ -316,11 +316,12 @@ class TradingAgentsGraph:
         if self.debug:
             trace = []
             for chunk in self.graph.stream(init_agent_state, **args):
-                if len(chunk["messages"]) == 0:
-                    pass
-                else:
+                if chunk.get("messages") and len(chunk["messages"]) > 0:
                     chunk["messages"][-1].pretty_print()
-                    trace.append(chunk)
+                trace.append(chunk)
+            
+            if not trace:
+                raise RuntimeError("Graph stream returned no chunks.")
             final_state = trace[-1]
         else:
             final_state = self.graph.invoke(init_agent_state, **args)

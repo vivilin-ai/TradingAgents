@@ -52,7 +52,25 @@ class Propagator:
             "fundamentals_report": "",
             "sentiment_report": "",
             "news_report": "",
+            "retry_count": 0,
+            "reference_price": self._fetch_current_price(company_name),
         }
+
+    def _fetch_current_price(self, ticker: str) -> float:
+        """Fetch the latest close price for baseline comparison."""
+        import yfinance as yf
+        try:
+            stock = yf.Ticker(ticker)
+            # Try to get the fast info price first
+            price = stock.fast_info.get("last_price")
+            if not price:
+                # Fallback to history
+                hist = stock.history(period="1d")
+                if not hist.empty:
+                    price = hist["Close"].iloc[-1]
+            return float(price) if price else 0.0
+        except Exception:
+            return 0.0
 
     def get_graph_args(self, callbacks: Optional[List] = None) -> Dict[str, Any]:
         """Get arguments for the graph invocation.

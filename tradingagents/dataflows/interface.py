@@ -152,7 +152,12 @@ def route_to_vendor(method: str, *args, **kwargs):
             continue
 
         vendor_impl = VENDOR_METHODS[method][vendor]
-        impl_func = vendor_impl[0] if isinstance(vendor_impl, list) else vendor_impl
+        if isinstance(vendor_impl, list):
+            if not vendor_impl:
+                continue
+            impl_func = vendor_impl[0]
+        else:
+            impl_func = vendor_impl
 
         try:
             return impl_func(*args, **kwargs)

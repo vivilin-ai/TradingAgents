@@ -71,3 +71,5 @@ class AgentState(MessagesState):
     ]
     final_trade_decision: Annotated[str, "Final decision made by the Risk Analysts"]
     past_context: Annotated[str, "Memory log context injected at run start (same-ticker decisions + cross-ticker lessons)"]
+    retry_count: Annotated[int, "Number of retries for the current analyst node"]
+    reference_price: Annotated[float, "Current real-time price used as a baseline for hallucination checks"]

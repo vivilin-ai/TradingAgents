@@ -65,11 +65,13 @@ MODEL_OPTIONS: ProviderModeOptions = {
     },
     "deepseek": {
         "quick": [
+            ("DeepSeek V4 Flash (SiliconFlow)", "deepseek-ai/DeepSeek-V4-Flash"),
             ("DeepSeek V3.2", "deepseek-chat"),
             ("Custom model ID", "custom"),
         ],
         "deep": [
             ("DeepSeek V3.2 (thinking)", "deepseek-reasoner"),
+            ("DeepSeek V4 Flash (SiliconFlow)", "deepseek-ai/DeepSeek-V4-Flash"),
             ("DeepSeek V3.2", "deepseek-chat"),
             ("Custom model ID", "custom"),
         ],
@@ -110,6 +112,20 @@ MODEL_OPTIONS: ProviderModeOptions = {
             ("GLM-4.7-Flash:latest (30B, local)", "glm-4.7-flash:latest"),
             ("GPT-OSS:latest (20B, local)", "gpt-oss:latest"),
             ("Qwen3:latest (8B, local)", "qwen3:latest"),
+        ],
+    },
+    "bailian": {
+        "quick": [
+            ("DeepSeek V4 Pro (Bailian)", "deepseek-v4-pro"),
+            ("Kimi 2.6 (Bailian)", "kimi-2.6"),
+            ("Qwen Plus", "qwen-plus"),
+            ("Qwen Turbo", "qwen-turbo"),
+        ],
+        "deep": [
+            ("Kimi 2.6 (Bailian)", "kimi-2.6"),
+            ("DeepSeek V4 Pro (Bailian)", "deepseek-v4-pro"),
+            ("Qwen Max", "qwen-max"),
+            ("Qwen Plus", "qwen-plus"),
         ],
     },
 }

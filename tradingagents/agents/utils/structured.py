@@ -37,7 +37,7 @@ def bind_structured(llm: Any, schema: type[T], agent_name: str) -> Optional[Any]
     try:
         return llm.with_structured_output(schema)
     except (NotImplementedError, AttributeError) as exc:
-        logger.warning(
+        logger.info(
             "%s: provider does not support with_structured_output (%s); "
             "falling back to free-text generation",
             agent_name, exc,
@@ -62,11 +62,13 @@ def invoke_structured_or_freetext(
     if structured_llm is not None:
         try:
             result = structured_llm.invoke(prompt)
+            if result is None:
+                raise ValueError("LLM returned None for structured output")
             return render(result)
         except Exception as exc:
             logger.warning(
-                "%s: structured-output invocation failed (%s); retrying once as free text",
-                agent_name, exc,
+                "%s: structured-output invocation failed (%s); result was %s. retrying once as free text",
+                agent_name, exc, type(result) if 'result' in locals() else 'N/A'
             )
 
     response = plain_llm.invoke(prompt)
