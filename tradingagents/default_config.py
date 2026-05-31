@@ -59,6 +59,10 @@ DEFAULT_CONFIG = {
     # Include LLM cross-ticker narrative in batch summary.md
     "weekly_summary_narrative": True,
 
+    # Max concurrent tickers in run_batch().
+    # 1 = sequential (safe, slower); 3 = parallel (faster, higher API load)
+    "batch_max_workers": 3,
+
     # ── Telegram Bot ──────────────────────────────────────────────────────────
     "bot_poll_interval": 2,  # seconds between getUpdates calls
 }

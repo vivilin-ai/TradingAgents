@@ -1395,18 +1395,31 @@ def scheduled_run(
             start_desc += f" 等 {len(tickers_preview)} 只"
     _notify(f"🚀 定时任务启动：{task_name}\n分析对象：{start_desc}\n日期：{run_date}\n\n分析进行中，完成后发送结果…")
 
+    # ── 逐只完成通知 ──────────────────────────────────────────────────────────
+    def on_ticker_done(result: dict) -> None:
+        ticker = result["ticker"]
+        if result.get("error"):
+            _notify(f"❌ {ticker}：失败\n{result['error'][:150]}")
+        else:
+            _notify(f"✅ {ticker}：{result.get('rating', '—')}")
+
     # ── 执行分析 ──────────────────────────────────────────────────────────────
     if task.is_watchlist():
-        results, summary_path = runner.run_batch(trade_date=date, mode="scheduled", task_name=task_name)
+        results, summary_path = runner.run_batch(
+            trade_date=date, mode="scheduled", task_name=task_name,
+            on_ticker_done=on_ticker_done,
+        )
     else:
         tickers = task.tickers() or []
         if len(tickers) == 1:
             result = runner.run_single(tickers[0], trade_date=date, mode="scheduled", task_name=task_name)
             results = [result]
             summary_path = None
+            on_ticker_done(result)
         else:
             results, summary_path = runner.run_batch(
-                tickers=tickers, trade_date=date, mode="scheduled", task_name=task_name
+                tickers=tickers, trade_date=date, mode="scheduled", task_name=task_name,
+                on_ticker_done=on_ticker_done,
             )
 
     # ── 完成通知 ──────────────────────────────────────────────────────────────

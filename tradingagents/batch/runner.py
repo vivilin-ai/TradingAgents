@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -183,11 +184,14 @@ class BatchRunner:
         Returns:
             (results, summary_path)
         """
+        from .watchlist import format_position_context
         trade_date = _resolve_date(trade_date)
 
+        # Load watchlist for tickers and positions
+        wl = load_watchlist(self.config["watchlist_path"])
         if tickers is None:
-            wl = load_watchlist(self.config["watchlist_path"])
             tickers = wl.get("tickers", [])
+        positions = wl.get("positions", {})
 
         if not tickers:
             logger.warning("No tickers to analyse.")
@@ -198,21 +202,44 @@ class BatchRunner:
             return [], summary_path
 
         out_dir = _output_dir(self.config, mode, trade_date, task_name=task_name)
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir.mkdir(parents=True, exist_ok=True)   # create once before threads start
 
-        logger.info("Batch start: %d tickers → %s", len(tickers), out_dir)
+        max_workers = max(1, int(self.config.get("batch_max_workers", 1)))
+        logger.info(
+            "Batch start: %d tickers, max_workers=%d → %s",
+            len(tickers), max_workers, out_dir,
+        )
+
         results: list[dict[str, Any]] = []
 
-        for ticker in tickers:
-            result = self._run_one(ticker, trade_date, out_dir)
-            results.append(result)
+        def _run_ticker(ticker: str) -> dict[str, Any]:
+            position = positions.get(ticker.upper())
+            extra_context = format_position_context(ticker, position)
+            return self._run_one(ticker, trade_date, out_dir, extra_context=extra_context)
+
+        def _on_done(result: dict) -> None:
             status = result.get("rating", "—") if not result.get("error") else f"ERR: {result['error'][:60]}"
-            logger.info("[%s] %s", ticker, status)
+            logger.info("[%s] %s", result["ticker"], status)
             if on_ticker_done:
                 try:
                     on_ticker_done(result)
                 except Exception as exc:
                     logger.warning("on_ticker_done callback raised: %s", exc)
+
+        if max_workers == 1:
+            # Sequential — preserves original submission order
+            for ticker in tickers:
+                result = _run_ticker(ticker)
+                results.append(result)
+                _on_done(result)
+        else:
+            # Parallel — results arrive in completion order
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                future_to_ticker = {pool.submit(_run_ticker, t): t for t in tickers}
+                for future in as_completed(future_to_ticker):
+                    result = future.result()   # _run_one never raises; errors are in result dict
+                    results.append(result)
+                    _on_done(result)
 
         # Write errors file if needed
         errors = [r for r in results if r.get("error")]
@@ -221,7 +248,6 @@ class BatchRunner:
 
         # Summary
         llm = self._make_narrative_llm() if narrative else None
-        from datetime import date as _date
         iso_week = datetime.date.fromisoformat(trade_date).isocalendar()
         iso_label = f"{iso_week[0]}-W{iso_week[1]:02d}"
 

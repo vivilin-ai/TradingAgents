@@ -126,9 +126,9 @@ def cmd_batch(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> N
     def on_ticker_update(result: dict) -> None:
         ticker = result["ticker"]
         if result.get("error"):
-            bot.send(chat_id, f"❌ {ticker}: {result['error'][:100]}")
+            bot.send_plain(chat_id, f"❌ {ticker}：失败 — {result['error'][:100]}")
         else:
-            bot.send(chat_id, f"✅ {ticker}: {result.get('rating', '—')}")
+            bot.send_plain(chat_id, f"✅ {ticker}：{result.get('rating', '—')}")
 
     def on_complete(job, outcome, error):
         if error:
