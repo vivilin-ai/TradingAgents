@@ -68,14 +68,22 @@ class TelegramBot:
         self._running = True
         logger.info("Bot started. Allowed IDs: %s", self.allowed_ids or "(none)")
 
+        _backoff = 1
         while self._running:
             try:
                 updates = self._get_updates()
                 for update in updates:
                     self._handle_update(update)
+                _backoff = 1  # reset backoff on success
+            except (ConnectionResetError, ConnectionAbortedError):
+                # Expected with proxies; suppress to debug to avoid terminal spam
+                logger.debug("Poll: connection reset by proxy, retrying in %ds", _backoff)
+                time.sleep(_backoff)
+                _backoff = min(_backoff * 2, 10)
             except requests.RequestException as exc:
-                logger.warning("Poll error: %s — retrying in 1s", exc)
-                time.sleep(1)
+                logger.debug("Poll error: %s — retrying in %ds", exc, _backoff)
+                time.sleep(_backoff)
+                _backoff = min(_backoff * 2, 10)
             except Exception as exc:
                 logger.error("Unexpected error in poll loop: %s", exc, exc_info=True)
                 time.sleep(2)
