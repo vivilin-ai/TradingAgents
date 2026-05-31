@@ -26,6 +26,8 @@
 
 # TradingAgents: Multi-Agent LLM Financial Trading Framework
 
+> **Acknowledgements** — This project is built upon the outstanding open-source work of the original [TradingAgents](https://github.com/TauricResearch/TradingAgents) framework by [Tauric Research](https://tauric.ai/) (Yijia Xiao, Edward Sun, Di Luo, Wei Wang). We are deeply grateful to the original authors and the community for their foundational research and generosity in open-sourcing the framework. All credit for the core multi-agent architecture belongs to them. This fork adds a personal-use layer: Telegram bot, position-aware analysis, watchlist position tracking, and scheduled tasks.
+
 ## News
 - [2026-05] **Personal edition features**: Telegram bot with two-way commands, position-aware analysis, watchlist position tracking, scheduled tasks with Telegram notifications.
 - [2026-04] **TradingAgents v0.2.4** — structured-output agents, LangGraph checkpoint resume, persistent decision log, DeepSeek/Qwen/GLM/Azure support, Docker. See [CHANGELOG.md](CHANGELOG.md).

@@ -13,6 +13,8 @@
 
 # TradingAgents：多智能体 LLM 金融交易框架
 
+> **致谢** — 本项目基于 [Tauric Research](https://tauric.ai/) 团队（Yijia Xiao、Edward Sun、Di Luo、Wei Wang）开源的 [TradingAgents](https://github.com/TauricResearch/TradingAgents) 框架二次开发。衷心感谢原作者团队在多智能体金融分析领域的开创性研究，以及他们以开源方式分享这一成果的慷慨精神。核心多智能体架构的一切功劳归属原创团队。本 Fork 在此基础上增加了个人使用层：Telegram 双向 Bot、持仓感知分析、自选列表持仓管理和定时任务功能。
+
 ## 更新
 - [2026-05] **个人版新功能**：Telegram 双向 Bot（发命令、收结果）、持仓感知分析、自选列表持仓管理、定时任务 + 启动/完成通知。
 - [2026-04] **v0.2.4** — 结构化输出智能体、LangGraph 断点续跑、持久化决策日志、DeepSeek/Qwen/GLM/Azure 支持、Docker。
