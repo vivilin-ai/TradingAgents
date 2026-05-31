@@ -1362,6 +1362,10 @@ def scheduled_run(
     logger = _log.getLogger(__name__)
     logger.info("scheduled-run: %s", task_name)
 
+    proxies = {}
+    if os.getenv("HTTPS_PROXY"):
+        proxies = {"https": os.getenv("HTTPS_PROXY"), "http": os.getenv("HTTP_PROXY", "")}
+
     def _notify(text: str) -> None:
         token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
         chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
@@ -1370,11 +1374,28 @@ def scheduled_run(
                 _req.post(
                     f"https://api.telegram.org/bot{token}/sendMessage",
                     json={"chat_id": chat_id, "text": text},
-                    timeout=10,
+                    proxies=proxies or None,
+                    timeout=15,
                 )
             except Exception as exc:
                 logger.warning("Telegram notify failed: %s", exc)
 
+    # ── 启动通知 ──────────────────────────────────────────────────────────────
+    import datetime as _dt
+    run_date = date or _dt.date.today().strftime("%Y-%m-%d")
+    if task.is_watchlist():
+        from tradingagents.batch.watchlist import load_watchlist
+        wl = load_watchlist(config["watchlist_path"])
+        ticker_count = len(wl.get("tickers", []))
+        start_desc = f"自选列表（{ticker_count} 只股票）"
+    else:
+        tickers_preview = task.tickers() or []
+        start_desc = "、".join(tickers_preview[:5])
+        if len(tickers_preview) > 5:
+            start_desc += f" 等 {len(tickers_preview)} 只"
+    _notify(f"🚀 定时任务启动：{task_name}\n分析对象：{start_desc}\n日期：{run_date}\n\n分析进行中，完成后发送结果…")
+
+    # ── 执行分析 ──────────────────────────────────────────────────────────────
     if task.is_watchlist():
         results, summary_path = runner.run_batch(trade_date=date, mode="scheduled", task_name=task_name)
     else:
@@ -1388,18 +1409,22 @@ def scheduled_run(
                 tickers=tickers, trade_date=date, mode="scheduled", task_name=task_name
             )
 
+    # ── 完成通知 ──────────────────────────────────────────────────────────────
     completed = [r for r in results if not r.get("error")]
     errors = [r for r in results if r.get("error")]
-    lines = [f"📅 Scheduled task: {task_name}",
-             f"✅ {len(completed)}/{len(results)} completed"]
+    lines = [
+        f"📊 定时任务完成：{task_name}",
+        f"日期：{run_date}",
+        f"✅ {len(completed)}/{len(results)} 完成",
+    ]
     for r in completed:
-        lines.append(f"  {r['ticker']}: {r.get('rating','—')}")
+        lines.append(f"  {r['ticker']}：{r.get('rating', '—')}")
     if errors:
-        lines.append(f"❌ Failed: {', '.join(r['ticker'] for r in errors)}")
+        lines.append(f"❌ 失败：{', '.join(r['ticker'] for r in errors)}")
     if summary_path:
-        lines.append(f"Report: {summary_path}")
+        lines.append(f"报告：{summary_path}")
     elif results and results[0].get("report_path"):
-        lines.append(f"Report: {results[0]['report_path']}")
+        lines.append(f"报告：{results[0]['report_path']}")
 
     _notify("\n".join(lines))
     console.print("\n".join(lines))
