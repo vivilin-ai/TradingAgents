@@ -62,15 +62,24 @@ def _parse_date(args: list[str]) -> tuple[str | None, list[str]]:
 def cmd_help(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> None:
     bot.send_plain(message["chat"]["id"], (
         "📈 TradingAgents Bot\n\n"
+        "【分析】\n"
         "/analyze TICKER [--date YYYY-MM-DD] — 分析单只股票\n"
         "/batch [--date YYYY-MM-DD] — 分析全部自选列表\n"
+        "/status — 查看当前任务进度\n\n"
+        "【自选列表】\n"
         "/list — 查看自选列表及持仓\n"
-        "/add TICKER [成本价 数量] — 加入自选（可附持仓）\n"
+        "/add TICKER [成本价 数量] — 加入自选\n"
         "/remove TICKER — 从自选删除\n"
-        "/position TICKER [成本价 数量] — 查看/更新持仓\n"
-        "/position TICKER clear — 清空持仓\n"
-        "/status — 查看当前任务进度\n"
-        "/help — 帮助"
+        "/position TICKER [成本价 数量] — 更新持仓\n"
+        "/position TICKER clear — 清空持仓\n\n"
+        "【定时任务】\n"
+        "/tasks — 查看定时任务列表\n"
+        "/tasks add 名称 对象 星期 时间 — 添加任务\n"
+        "  例：/tasks add weekly watchlist 周六 08:00\n"
+        "/tasks remove 名称 — 删除任务\n"
+        "/tasks install — 写入系统调度（立即生效）\n"
+        "/tasks uninstall — 卸载所有调度\n\n"
+        "/help — 显示此帮助"
     ))
 
 
@@ -264,6 +273,120 @@ def cmd_position(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -
         bot.send_plain(chat_id, f"📋 {ticker}：未持仓（NA）\n\n设置持仓：/position {ticker} 成本价 数量")
 
 
+def cmd_tasks(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> None:
+    """Manage scheduled tasks via bot.
+
+    /tasks                    → list all tasks
+    /tasks add <名称> <对象> <星期> <时间>  e.g. /tasks add weekly_all watchlist 周六 08:00
+    /tasks remove <名称>
+    /tasks install
+    /tasks uninstall
+    """
+    from tradingagents.scheduler.tasks import ScheduledTask, load_tasks, add_task, remove_task
+    from tradingagents.scheduler.installer import install_all, uninstall_all, task_status
+
+    _DAY_MAP = {
+        "monday": 1, "tuesday": 2, "wednesday": 3, "thursday": 4,
+        "friday": 5, "saturday": 6, "sunday": 0,
+        "周一": 1, "周二": 2, "周三": 3, "周四": 4,
+        "周五": 5, "周六": 6, "周日": 0, "周天": 0,
+        "mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6, "sun": 0,
+    }
+    _DAY_LABEL = {0:"周日",1:"周一",2:"周二",3:"周三",4:"周四",5:"周五",6:"周六"}
+
+    def describe(schedule):
+        parts = schedule.split()
+        if len(parts) < 5:
+            return schedule
+        m, h, _, _, dow = parts
+        try:
+            t = f"{int(h):02d}:{int(m):02d}"
+            return f"每{_DAY_LABEL.get(int(dow), dow)} {t}"
+        except Exception:
+            return schedule
+
+    chat_id = message["chat"]["id"]
+    sub = args[0].lower() if args else "list"
+
+    # ── list ──────────────────────────────────────────────────────────────────
+    if sub == "list" or not args:
+        tasks = load_tasks()
+        if not tasks:
+            bot.send_plain(chat_id, "暂无定时任务。\n\n用 /tasks add 名称 对象 星期 时间 来添加。\n例：/tasks add weekly watchlist 周六 08:00")
+            return
+        status = task_status()
+        lines = ["📅 定时任务列表\n"]
+        for t in tasks:
+            installed = "✓已安装" if status.get(t.name) else "未安装"
+            enabled = "启用" if t.enabled else "停用"
+            lines.append(f"• {t.name}\n  {describe(t.schedule)} | {t.target} | {enabled} | {installed}")
+        bot.send_plain(chat_id, "\n".join(lines))
+
+    # ── add ───────────────────────────────────────────────────────────────────
+    elif sub == "add":
+        # /tasks add <名称> <对象> <星期> <时间>
+        # 对象: watchlist / NVDA / NVDA,AAPL
+        if len(args) < 5:
+            bot.send_plain(chat_id,
+                "用法：/tasks add 名称 对象 星期 时间\n\n"
+                "例：\n"
+                "/tasks add weekly watchlist 周六 08:00\n"
+                "/tasks add daily_nvda NVDA 周一 07:30\n"
+                "/tasks add basket NVDA,AAPL,MSFT 周五 18:00"
+            )
+            return
+        name, target, day, time_str = args[1], args[2], args[3], args[4]
+        day_lower = day.strip().lower()
+        if day_lower not in _DAY_MAP:
+            bot.send_plain(chat_id, f"无法识别的星期：{day}\n支持：周一~周日 / mon~sun")
+            return
+        try:
+            h, m = (int(x) for x in time_str.strip().split(":"))
+        except Exception:
+            bot.send_plain(chat_id, f"时间格式错误：{time_str}，请用 HH:MM，如 08:00")
+            return
+        dow = _DAY_MAP[day_lower]
+        cron = f"{m} {h} * * {dow}"
+        task = ScheduledTask(name=name, schedule=cron, target=target, enabled=True)
+        add_task(task)
+        bot.send_plain(chat_id,
+            f"✓ 任务已添加：{name}\n"
+            f"  对象：{target}\n"
+            f"  频率：{describe(cron)}\n\n"
+            f"发送 /tasks install 写入系统调度，立即生效。"
+        )
+
+    # ── remove ────────────────────────────────────────────────────────────────
+    elif sub == "remove":
+        if len(args) < 2:
+            bot.send_plain(chat_id, "用法：/tasks remove 名称")
+            return
+        try:
+            remove_task(args[1])
+            bot.send_plain(chat_id, f"✓ 已删除任务：{args[1]}\n\n发送 /tasks install 同步系统调度。")
+        except KeyError:
+            bot.send_plain(chat_id, f"找不到任务：{args[1]}")
+
+    # ── install ───────────────────────────────────────────────────────────────
+    elif sub == "install":
+        installed = install_all()
+        if not installed:
+            bot.send_plain(chat_id, "没有已启用的任务需要安装。")
+            return
+        bot.send_plain(chat_id, f"✓ 已安装 {len(installed)} 个任务：\n" + "\n".join(f"  • {n}" for n in installed) + "\n\nMac 不需要重启，调度立即生效。")
+
+    # ── uninstall ─────────────────────────────────────────────────────────────
+    elif sub == "uninstall":
+        removed = uninstall_all()
+        if not removed:
+            bot.send_plain(chat_id, "没有已安装的任务。")
+            return
+        bot.send_plain(chat_id, f"已卸载 {len(removed)} 个任务。")
+
+    else:
+        bot.send_plain(chat_id, "未知子命令。支持：list / add / remove / install / uninstall")
+
+
 def cmd_status(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> None:
     chat_id = message["chat"]["id"]
     status = bot.job_queue.get_status()
@@ -299,5 +422,6 @@ COMMANDS: dict[str, Any] = {
     "/add":      cmd_add,
     "/remove":   cmd_remove,
     "/position": cmd_position,
+    "/tasks":    cmd_tasks,
     "/status":   cmd_status,
 }
