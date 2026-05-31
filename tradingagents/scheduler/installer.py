@@ -23,9 +23,18 @@ _CRON_MARKER = "# tradingagents-task:"
 _LOG_DIR = Path.home() / ".tradingagents" / "logs"
 
 
-def _tradingagents_cmd() -> str:
-    cmd = shutil.which("tradingagents")
-    return cmd if cmd else f"{sys.executable} -m cli.main"
+def _python_and_args() -> tuple[str, list[str]]:
+    """Return (python_executable, base_args) for the launchd ProgramArguments.
+
+    We call .venv/bin/python -m cli.main directly instead of going through
+    the tradingagents wrapper script.  The wrapper reads pyvenv.cfg via the
+    Python C bootstrap, which macOS blocks for launchd processes that don't
+    have explicit file-system access grants.  Calling the interpreter binary
+    itself bypasses that restriction.
+    """
+    # Prefer the venv Python that is running right now
+    python = sys.executable
+    return python, ["-m", "cli.main"]
 
 
 def _plist_path(task_name: str) -> Path:
@@ -40,11 +49,19 @@ def _cron_entry(task: ScheduledTask, cmd: str) -> str:
     )
 
 
-def _plist_content(task: ScheduledTask, cmd: str) -> str:
+def _plist_content(task: ScheduledTask) -> str:
     label = f"{_LABEL_PREFIX}{task.name}"
     log_out = _LOG_DIR / f"{task.name}.log"
     log_err = _LOG_DIR / f"{task.name}_error.log"
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    python, base_args = _python_and_args()
+    project_dir = str(Path.cwd())
+
+    # Build ProgramArguments: python -m cli.main scheduled-run <task_name>
+    prog_args = "\n        ".join(
+        f"<string>{a}</string>" for a in [python] + base_args + ["scheduled-run", task.name]
+    )
 
     # Parse cron expression: min hour dom month dow
     parts = task.schedule.strip().split()
@@ -52,19 +69,14 @@ def _plist_content(task: ScheduledTask, cmd: str) -> str:
         raise ValueError(f"Invalid cron expression: '{task.schedule}'")
     minute, hour = parts[0], parts[1]
 
-    # Build StartCalendarInterval from the cron minute/hour.
-    # Full cron semantics (wildcards, ranges) are not all expressible in
-    # launchd; we support the common "specific minute + specific hour" case.
     cal: list[str] = []
     if minute != "*":
         cal.append(f"<key>Minute</key><integer>{int(minute)}</integer>")
     if hour != "*":
         cal.append(f"<key>Hour</key><integer>{int(hour)}</integer>")
 
-    # Day-of-week: launchd uses 0=Sunday..6=Saturday
     dow = parts[4]
     if dow not in ("*", "?"):
-        # Support ranges like "1-5"
         if "-" in dow:
             start_d, end_d = (int(x) for x in dow.split("-"))
             cal_items = [
@@ -87,10 +99,10 @@ def _plist_content(task: ScheduledTask, cmd: str) -> str:
     <string>{label}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/sh</string>
-        <string>-c</string>
-        <string>cd {Path.cwd()} &amp;&amp; {cmd} scheduled-run {task.name}</string>
+        {prog_args}
     </array>
+    <key>WorkingDirectory</key>
+    <string>{project_dir}</string>
     <key>StartCalendarInterval</key>
     {interval_xml}
     <key>RunAtLoad</key>
@@ -109,18 +121,19 @@ def _plist_content(task: ScheduledTask, cmd: str) -> str:
 def install_all(tasks_path: Optional[str] = None) -> list[str]:
     """Install all enabled tasks. Returns list of installed task names."""
     tasks = [t for t in load_tasks(tasks_path) if t.enabled]
-    cmd = _tradingagents_cmd()
     installed: list[str] = []
 
     if platform.system() == "Darwin":
         _LAUNCHD_DIR.mkdir(parents=True, exist_ok=True)
         for task in tasks:
             plist = _plist_path(task.name)
-            plist.write_text(_plist_content(task, cmd), encoding="utf-8")
+            plist.write_text(_plist_content(task), encoding="utf-8")
             subprocess.run(["launchctl", "unload", str(plist)], capture_output=True)
             subprocess.run(["launchctl", "load", str(plist)], capture_output=True)
             installed.append(task.name)
     else:
+        python, base_args = _python_and_args()
+        cmd = f"{python} {' '.join(base_args)}"
         _install_crontab(tasks, cmd)
         installed = [t.name for t in tasks]
 
