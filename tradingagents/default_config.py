@@ -62,6 +62,12 @@ DEFAULT_CONFIG = {
     # Max concurrent tickers in run_batch().
     # 1 = sequential (safe, slower); 3 = parallel (faster, higher API load)
     "batch_max_workers": 3,
+    # Max retries per failed ticker. Rate-limit failures wait before retry;
+    # other failures retry immediately.
+    "batch_max_retries": 2,
+    # Base wait seconds before the first rate-limit retry. Each subsequent
+    # retry waits 2x longer (30s → 60s).
+    "batch_retry_wait": 30,
 
     # ── Telegram Bot ──────────────────────────────────────────────────────────
     "bot_poll_interval": 2,  # seconds between getUpdates calls

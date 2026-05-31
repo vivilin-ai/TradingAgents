@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -109,6 +110,19 @@ def _build_report(state: dict[str, Any], ticker: str, trade_date: str) -> str:
     return "\n".join(sections)
 
 
+# ── Rate-limit detection ──────────────────────────────────────────────────────
+
+_RATE_LIMIT_KEYWORDS = (
+    "429", "rate limit", "too many requests", "ratelimit",
+    "rate_limit", "quota", "capacity", "overloaded",
+)
+
+
+def _is_rate_limit(error: str) -> bool:
+    low = error.lower()
+    return any(kw in low for kw in _RATE_LIMIT_KEYWORDS)
+
+
 # ── BatchRunner ───────────────────────────────────────────────────────────────
 
 class BatchRunner:
@@ -168,26 +182,29 @@ class BatchRunner:
         task_name: Optional[str] = None,
         narrative: bool = True,
         on_ticker_done: Optional[Callable[[dict], None]] = None,
+        on_rate_limit: Optional[Callable[[list[str], int, int, int], None]] = None,
         on_complete: Optional[Callable[[list[dict], Path], None]] = None,
     ) -> tuple[list[dict[str, Any]], Path]:
-        """Analyse multiple tickers and generate a summary.
+        """Analyse multiple tickers with parallel execution and auto-retry.
 
         Args:
-            tickers:       List of tickers. If None, loads from watchlist.
-            trade_date:    Date string YYYY-MM-DD.
-            mode:          "batch" | "scheduled".
-            task_name:     Required when mode=="scheduled".
-            narrative:     Include LLM cross-ticker narrative in summary.
-            on_ticker_done: Called after each ticker completes.
-            on_complete:   Called with (results, summary_path) when all done.
+            tickers:        Ticker list; defaults to watchlist when None.
+            trade_date:     YYYY-MM-DD; defaults to most recent trading day.
+            mode:           "batch" | "scheduled".
+            task_name:      Required when mode=="scheduled".
+            narrative:      Include LLM cross-ticker narrative in summary.
+            on_ticker_done: Called immediately after each ticker finishes
+                            (success or failure).
+            on_rate_limit:  Called when rate-limiting is detected with
+                            (failed_tickers, old_workers, new_workers, wait_s).
+            on_complete:    Called with (results, summary_path) at the very end.
 
         Returns:
             (results, summary_path)
         """
         from .watchlist import format_position_context
-        trade_date = _resolve_date(trade_date)
 
-        # Load watchlist for tickers and positions
+        trade_date = _resolve_date(trade_date)
         wl = load_watchlist(self.config["watchlist_path"])
         if tickers is None:
             tickers = wl.get("tickers", [])
@@ -202,61 +219,103 @@ class BatchRunner:
             return [], summary_path
 
         out_dir = _output_dir(self.config, mode, trade_date, task_name=task_name)
-        out_dir.mkdir(parents=True, exist_ok=True)   # create once before threads start
+        out_dir.mkdir(parents=True, exist_ok=True)
 
-        max_workers = max(1, int(self.config.get("batch_max_workers", 1)))
+        max_workers = max(1, int(self.config.get("batch_max_workers", 3)))
+        max_retries = max(0, int(self.config.get("batch_max_retries", 2)))
+        retry_wait  = max(1, int(self.config.get("batch_retry_wait", 30)))
+
         logger.info(
-            "Batch start: %d tickers, max_workers=%d → %s",
-            len(tickers), max_workers, out_dir,
+            "Batch start: %d tickers, workers=%d, retries=%d → %s",
+            len(tickers), max_workers, max_retries, out_dir,
         )
 
-        results: list[dict[str, Any]] = []
+        # ticker → latest result (updated on each attempt)
+        results_map: dict[str, dict[str, Any]] = {}
 
         def _run_ticker(ticker: str) -> dict[str, Any]:
             position = positions.get(ticker.upper())
-            extra_context = format_position_context(ticker, position)
-            return self._run_one(ticker, trade_date, out_dir, extra_context=extra_context)
+            ctx = format_position_context(ticker, position)
+            return self._run_one(ticker, trade_date, out_dir, extra_context=ctx)
 
-        def _on_done(result: dict) -> None:
+        def _fire_ticker_done(result: dict) -> None:
             status = result.get("rating", "—") if not result.get("error") else f"ERR: {result['error'][:60]}"
             logger.info("[%s] %s", result["ticker"], status)
             if on_ticker_done:
                 try:
                     on_ticker_done(result)
                 except Exception as exc:
-                    logger.warning("on_ticker_done callback raised: %s", exc)
+                    logger.warning("on_ticker_done raised: %s", exc)
 
-        if max_workers == 1:
-            # Sequential — preserves original submission order
-            for ticker in tickers:
-                result = _run_ticker(ticker)
-                results.append(result)
-                _on_done(result)
-        else:
-            # Parallel — results arrive in completion order
-            with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                future_to_ticker = {pool.submit(_run_ticker, t): t for t in tickers}
-                for future in as_completed(future_to_ticker):
-                    result = future.result()   # _run_one never raises; errors are in result dict
-                    results.append(result)
-                    _on_done(result)
+        def _run_all(batch: list[str], workers: int) -> None:
+            """Run a batch of tickers at given concurrency; update results_map."""
+            if workers == 1:
+                for ticker in batch:
+                    r = _run_ticker(ticker)
+                    results_map[ticker] = r
+                    _fire_ticker_done(r)
+            else:
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = {pool.submit(_run_ticker, t): t for t in batch}
+                    for future in as_completed(futures):
+                        r = future.result()
+                        results_map[r["ticker"]] = r
+                        _fire_ticker_done(r)
 
-        # Write errors file if needed
+        # ── Initial run ───────────────────────────────────────────────────────
+        _run_all(tickers, max_workers)
+
+        # ── Retry loop ────────────────────────────────────────────────────────
+        for attempt in range(1, max_retries + 1):
+            failed = [r for r in results_map.values() if r.get("error")]
+            if not failed:
+                break
+
+            rate_limited = [r for r in failed if _is_rate_limit(r.get("error", ""))]
+            retry_tickers = [r["ticker"] for r in failed]
+
+            if rate_limited:
+                # Reduce concurrency and wait before retrying
+                old_workers = max_workers
+                max_workers = max(1, max_workers - 1)
+                wait_s = retry_wait * (2 ** (attempt - 1))   # 30s → 60s
+
+                logger.warning(
+                    "Rate limit on attempt %d — workers %d→%d, waiting %ds, retrying: %s",
+                    attempt, old_workers, max_workers, wait_s,
+                    ", ".join(r["ticker"] for r in rate_limited),
+                )
+                if on_rate_limit:
+                    try:
+                        on_rate_limit(
+                            [r["ticker"] for r in rate_limited],
+                            old_workers, max_workers, wait_s,
+                        )
+                    except Exception as exc:
+                        logger.warning("on_rate_limit raised: %s", exc)
+                time.sleep(wait_s)
+            else:
+                # Non-rate-limit failure: short pause then retry
+                logger.info(
+                    "Retry attempt %d/%d (non-rate-limit) for: %s",
+                    attempt, max_retries, ", ".join(retry_tickers),
+                )
+                time.sleep(5)
+
+            _run_all(retry_tickers, max_workers)
+
+        # ── Finalise ──────────────────────────────────────────────────────────
+        results = list(results_map.values())
         errors = [r for r in results if r.get("error")]
         if errors:
             self._write_errors(errors, out_dir)
 
-        # Summary
         llm = self._make_narrative_llm() if narrative else None
-        iso_week = datetime.date.fromisoformat(trade_date).isocalendar()
-        iso_label = f"{iso_week[0]}-W{iso_week[1]:02d}"
-
+        iso = datetime.date.fromisoformat(trade_date).isocalendar()
+        iso_label = f"{iso[0]}-W{iso[1]:02d}"
         summary_md = generate_summary(
-            results=results,
-            trade_date=trade_date,
-            iso_week=iso_label,
-            narrative=narrative,
-            llm=llm,
+            results=results, trade_date=trade_date,
+            iso_week=iso_label, narrative=narrative, llm=llm,
         )
         summary_path = out_dir / "summary.md"
         summary_path.write_text(summary_md, encoding="utf-8")
@@ -266,7 +325,7 @@ class BatchRunner:
             try:
                 on_complete(results, summary_path)
             except Exception as exc:
-                logger.warning("on_complete callback raised: %s", exc)
+                logger.warning("on_complete raised: %s", exc)
 
         return results, summary_path
 

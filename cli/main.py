@@ -1403,11 +1403,19 @@ def scheduled_run(
         else:
             _notify(f"✅ {ticker}：{result.get('rating', '—')}")
 
+    def on_rate_limit(failed_tickers: list, old_w: int, new_w: int, wait_s: int) -> None:
+        _notify(
+            f"⚠️ 检测到 API 限速\n"
+            f"受影响：{', '.join(failed_tickers)}\n"
+            f"并发数：{old_w} → {new_w}\n"
+            f"等待 {wait_s} 秒后重试…"
+        )
+
     # ── 执行分析 ──────────────────────────────────────────────────────────────
     if task.is_watchlist():
         results, summary_path = runner.run_batch(
             trade_date=date, mode="scheduled", task_name=task_name,
-            on_ticker_done=on_ticker_done,
+            on_ticker_done=on_ticker_done, on_rate_limit=on_rate_limit,
         )
     else:
         tickers = task.tickers() or []
@@ -1419,7 +1427,7 @@ def scheduled_run(
         else:
             results, summary_path = runner.run_batch(
                 tickers=tickers, trade_date=date, mode="scheduled", task_name=task_name,
-                on_ticker_done=on_ticker_done,
+                on_ticker_done=on_ticker_done, on_rate_limit=on_rate_limit,
             )
 
     # ── 完成通知 ──────────────────────────────────────────────────────────────

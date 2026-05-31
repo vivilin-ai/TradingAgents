@@ -149,11 +149,21 @@ def cmd_batch(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> N
         bot.send(chat_id, "\n".join(lines))
 
     # Wrap run() to pass on_ticker_done
+    def on_rate_limit_update(failed_tickers, old_w, new_w, wait_s):
+        bot.send_plain(
+            chat_id,
+            f"⚠️ 检测到 API 限速\n"
+            f"受影响：{', '.join(failed_tickers)}\n"
+            f"并发数：{old_w} → {new_w}\n"
+            f"等待 {wait_s} 秒后自动重试…"
+        )
+
     def run_with_callbacks():
         results, summary_path = runner.run_batch(
             trade_date=date_str,
             mode="batch",
             on_ticker_done=on_ticker_update,
+            on_rate_limit=on_rate_limit_update,
         )
         return results, summary_path
 
