@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 _API = "https://api.telegram.org/bot{token}/{method}"
 _SEND_TIMEOUT = 15
-_POLL_TIMEOUT = 30   # long-poll window; counted against Telegram's server
+_POLL_TIMEOUT = 10   # short poll to avoid proxy connection resets
 
 
 class TelegramBot:
@@ -74,8 +74,8 @@ class TelegramBot:
                 for update in updates:
                     self._handle_update(update)
             except requests.RequestException as exc:
-                logger.warning("Poll error: %s — retrying in 5s", exc)
-                time.sleep(5)
+                logger.warning("Poll error: %s — retrying in 1s", exc)
+                time.sleep(1)
             except Exception as exc:
                 logger.error("Unexpected error in poll loop: %s", exc, exc_info=True)
                 time.sleep(2)
