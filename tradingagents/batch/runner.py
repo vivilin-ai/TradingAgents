@@ -110,6 +110,36 @@ def _build_report(state: dict[str, Any], ticker: str, trade_date: str) -> str:
     return "\n".join(sections)
 
 
+# ── Notification helpers ──────────────────────────────────────────────────────
+
+def extract_reason(pm_decision: str, max_chars: int = 300) -> str:
+    """Extract a concise reason from the Portfolio Manager decision text.
+
+    Strips the rating header line and markdown, then returns the first
+    substantive content up to max_chars characters.
+    """
+    if not pm_decision:
+        return ""
+
+    import re
+    lines = []
+    for line in pm_decision.splitlines():
+        # Remove markdown bold/header markers
+        clean = re.sub(r"\*{1,2}|#{1,6}", "", line).strip()
+        if not clean:
+            continue
+        # Skip the short rating-only line (e.g. "Rating: Buy")
+        if re.match(r"^rating\s*[:：]", clean, re.IGNORECASE) and len(clean) < 40:
+            continue
+        lines.append(clean)
+
+    text = " ".join(lines)
+    if len(text) > max_chars:
+        # Truncate at a word boundary
+        text = text[:max_chars].rsplit(" ", 1)[0].rstrip("，。,") + "…"
+    return text
+
+
 # ── Rate-limit detection ──────────────────────────────────────────────────────
 
 _RATE_LIMIT_KEYWORDS = (

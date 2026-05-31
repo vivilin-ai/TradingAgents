@@ -124,11 +124,17 @@ def cmd_batch(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> N
         return results, summary_path
 
     def on_ticker_update(result: dict) -> None:
+        from tradingagents.batch.runner import extract_reason
         ticker = result["ticker"]
         if result.get("error"):
             bot.send_plain(chat_id, f"❌ {ticker}：失败 — {result['error'][:100]}")
         else:
-            bot.send_plain(chat_id, f"✅ {ticker}：{result.get('rating', '—')}")
+            rating = result.get("rating", "—")
+            reason = extract_reason(result.get("pm_decision", ""))
+            body = f"✅ {ticker}：{rating}"
+            if reason:
+                body += f"\n{reason}"
+            bot.send_plain(chat_id, body)
 
     def on_complete(job, outcome, error):
         if error:

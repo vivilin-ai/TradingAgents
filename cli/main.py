@@ -1397,11 +1397,17 @@ def scheduled_run(
 
     # ── 逐只完成通知 ──────────────────────────────────────────────────────────
     def on_ticker_done(result: dict) -> None:
+        from tradingagents.batch.runner import extract_reason
         ticker = result["ticker"]
         if result.get("error"):
             _notify(f"❌ {ticker}：失败\n{result['error'][:150]}")
         else:
-            _notify(f"✅ {ticker}：{result.get('rating', '—')}")
+            rating = result.get("rating", "—")
+            reason = extract_reason(result.get("pm_decision", ""))
+            body = f"✅ {ticker}：{rating}"
+            if reason:
+                body += f"\n{reason}"
+            _notify(body)
 
     def on_rate_limit(failed_tickers: list, old_w: int, new_w: int, wait_s: int) -> None:
         _notify(
