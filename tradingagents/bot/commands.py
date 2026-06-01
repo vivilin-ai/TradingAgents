@@ -98,11 +98,11 @@ def cmd_analyze(bot: "TelegramBot", message: dict[str, Any], args: list[str]) ->
 
     # Ask about position before queuing
     bot._pending_positions[str(chat_id)] = {"ticker": ticker, "date": date_str}
-    bot.send(
+    bot.send_plain(
         chat_id,
-        f"📋 *{ticker}* — 你目前持有该股票吗？\n\n"
-        f"• 如持有，请回复：`成本价 数量` （例：`125\\.50 100`）\n"
-        f"• 如未持有，请回复：`no`",
+        f"📋 {ticker} — 你目前持有该股票吗？\n\n"
+        f"• 如持有，请回复：成本价 数量（例：125.50 100）\n"
+        f"• 如未持有，请回复：no",
     )
 
 
