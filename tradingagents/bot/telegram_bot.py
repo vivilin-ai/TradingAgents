@@ -18,7 +18,7 @@ from typing import Any, Optional
 import requests
 
 from .queue import JobQueue
-from .commands import COMMANDS, _split
+from .commands import COMMANDS, _split, _currency
 
 logger = logging.getLogger(__name__)
 
@@ -96,38 +96,48 @@ class TelegramBot:
         """Send a MarkdownV2-formatted message.  Returns True on success."""
         if not self.token:
             return False
-        try:
-            resp = requests.post(
-                _API.format(token=self.token, method="sendMessage"),
-                json={
-                    "chat_id": chat_id,
-                    "text": text,
-                    "parse_mode": "MarkdownV2",
-                    "disable_web_page_preview": True,
-                },
-                timeout=_SEND_TIMEOUT,
-            )
-            resp.raise_for_status()
-            return True
-        except requests.RequestException as exc:
-            logger.error("send() failed to %s: %s", chat_id, exc)
-            return False
+        for attempt in range(3):
+            try:
+                resp = requests.post(
+                    _API.format(token=self.token, method="sendMessage"),
+                    json={
+                        "chat_id": chat_id,
+                        "text": text,
+                        "parse_mode": "MarkdownV2",
+                        "disable_web_page_preview": True,
+                    },
+                    timeout=_SEND_TIMEOUT,
+                )
+                resp.raise_for_status()
+                return True
+            except requests.RequestException as exc:
+                if attempt < 2:
+                    time.sleep(2)
+                    continue
+                logger.error("send() failed to %s: %s", chat_id, exc)
+                return False
+        return False
 
     def send_plain(self, chat_id: int | str, text: str) -> bool:
         """Send a plain-text message (no markdown parsing)."""
         if not self.token:
             return False
-        try:
-            resp = requests.post(
-                _API.format(token=self.token, method="sendMessage"),
-                json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True},
-                timeout=_SEND_TIMEOUT,
-            )
-            resp.raise_for_status()
-            return True
-        except requests.RequestException as exc:
-            logger.error("send_plain() failed to %s: %s", chat_id, exc)
-            return False
+        for attempt in range(3):
+            try:
+                resp = requests.post(
+                    _API.format(token=self.token, method="sendMessage"),
+                    json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True},
+                    timeout=_SEND_TIMEOUT,
+                )
+                resp.raise_for_status()
+                return True
+            except requests.RequestException as exc:
+                if attempt < 2:
+                    time.sleep(2)
+                    continue
+                logger.error("send_plain() failed to %s: %s", chat_id, exc)
+                return False
+        return False
 
     # ── Internals ─────────────────────────────────────────────────────────────
 
@@ -155,7 +165,11 @@ class TelegramBot:
         if not text.startswith("/"):
             # Handle pending position reply
             if str(chat_id) in self._pending_positions:
-                self._handle_position_reply(message, text)
+                try:
+                    self._handle_position_reply(message, text)
+                except Exception as exc:
+                    logger.error("_handle_position_reply raised: %s", exc, exc_info=True)
+                    self.send_plain(chat_id, f"内部错误，请重新发送 /analyze 命令重试。")
             return
 
         # Whitelist check
@@ -211,7 +225,8 @@ class TelegramBot:
 
         # Confirm and queue
         if position:
-            pos_label = f"{position['qty']:,.0f} 股 @ ${position['cost']:,.2f}"
+            cur = _currency(ticker)
+            pos_label = f"{position['qty']:,.0f} 股 @ {cur}{position['cost']:,.2f}"
         else:
             pos_label = "未持仓"
 
@@ -225,7 +240,10 @@ class TelegramBot:
                 err_msg = str(error or result.get("error", "unknown error"))
                 self.send_plain(chat_id, f"❌ {ticker} 分析失败：{err_msg[:300]}")
                 return
-            pm = result.get("pm_decision", "") or ""
+            pm = (result.get("pm_decision") or "") if result else ""
+            if not pm:
+                self.send_plain(chat_id, f"❌ {ticker} 分析失败：未生成决策报告（可能是数据缺失或模型超时），请稍后重试。")
+                return
             rating = result.get("rating", "—")
             header = f"📊 {ticker} · {result.get('date', '')} · 评级：{rating}\n\n"
             for chunk in _split(header + pm):

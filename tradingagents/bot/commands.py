@@ -21,6 +21,23 @@ logger = logging.getLogger(__name__)
 
 _MAX_MSG = 4000   # Telegram limit is 4096; leave headroom
 
+_SUFFIX_CURRENCY: dict[str, str] = {
+    "HK":  "HK$",   # Hong Kong
+    "TO":  "CA$",   # Toronto
+    "AX":  "A$",    # Australia
+    "L":   "£",     # London
+    "T":   "¥",     # Tokyo
+    "SS":  "¥",     # Shanghai
+    "SZ":  "¥",     # Shenzhen
+}
+
+def _currency(ticker: str) -> str:
+    """Return the currency symbol for a ticker based on its exchange suffix."""
+    parts = ticker.upper().rsplit(".", 1)
+    if len(parts) == 2:
+        return _SUFFIX_CURRENCY.get(parts[1], "$")
+    return "$"
+
 
 def _split(text: str, limit: int = _MAX_MSG) -> list[str]:
     """Split a long string into ≤limit-char chunks at newline boundaries."""
@@ -87,13 +104,13 @@ def cmd_analyze(bot: "TelegramBot", message: dict[str, Any], args: list[str]) ->
     chat_id = message["chat"]["id"]
 
     if not args:
-        bot.send(chat_id, "Usage: /analyze TICKER \\[--date YYYY-MM-DD\\]")
+        bot.send_plain(chat_id, "用法：/analyze TICKER [--date YYYY-MM-DD]")
         return
 
     date_str, remaining = _parse_date(args)
     ticker = remaining[0].upper() if remaining else None
     if not ticker:
-        bot.send(chat_id, "Please specify a ticker, e.g. /analyze NVDA")
+        bot.send_plain(chat_id, "请指定股票代码，例如：/analyze NVDA")
         return
 
     # Ask about position before queuing
@@ -114,20 +131,18 @@ def cmd_batch(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> N
     wl = load_watchlist(bot.config["watchlist_path"])
     tickers = wl.get("tickers", [])
     if not tickers:
-        bot.send(chat_id, "Your watchlist is empty. Use /add TICKER to add stocks.")
+        bot.send_plain(chat_id, "自选列表为空，请用 /add TICKER 添加股票。")
         return
 
     runner = BatchRunner(config=bot.config)
-
-    def run():
-        results, summary_path = runner.run_batch(trade_date=date_str, mode="batch")
-        return results, summary_path
 
     def on_ticker_update(result: dict) -> None:
         from tradingagents.batch.runner import extract_reason
         ticker = result["ticker"]
         if result.get("error"):
-            bot.send_plain(chat_id, f"❌ {ticker}：失败 — {result['error'][:100]}")
+            bot.send_plain(chat_id, f"❌ {ticker}：失败 — {result['error'][:150]}")
+        elif not result.get("pm_decision"):
+            bot.send_plain(chat_id, f"❌ {ticker}：失败 — 未生成决策报告（数据缺失或模型超时）")
         else:
             rating = result.get("rating", "—")
             reason = extract_reason(result.get("pm_decision", ""))
@@ -138,23 +153,22 @@ def cmd_batch(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> N
 
     def on_complete(job, outcome, error):
         if error:
-            bot.send(chat_id, f"❌ Batch failed: `{str(error)[:300]}`")
+            bot.send_plain(chat_id, f"❌ Batch 失败：{str(error)[:300]}")
             return
         results, summary_path = outcome
-        completed = [r for r in results if not r.get("error")]
-        errors = [r for r in results if r.get("error")]
+        completed = [r for r in results if not r.get("error") and r.get("pm_decision")]
+        errors = [r for r in results if r.get("error") or not r.get("pm_decision")]
         lines = [
-            f"📊 *Batch complete* · {date_label}",
-            f"✅ {len(completed)}/{len(results)} succeeded",
+            f"📊 Batch 完成 · {date_label}",
+            f"✅ {len(completed)}/{len(results)} 成功",
         ]
         for r in completed:
             lines.append(f"  {r['ticker']}: {r.get('rating', '—')}")
         if errors:
-            lines.append(f"❌ Failed: {', '.join(r['ticker'] for r in errors)}")
-        lines.append(f"\nReport saved: `{summary_path}`")
-        bot.send(chat_id, "\n".join(lines))
+            lines.append(f"❌ 失败：{', '.join(r['ticker'] for r in errors)}")
+        lines.append(f"\n报告：{summary_path}")
+        bot.send_plain(chat_id, "\n".join(lines))
 
-    # Wrap run() to pass on_ticker_done
     def on_rate_limit_update(failed_tickers, old_w, new_w, wait_s):
         bot.send_plain(
             chat_id,
@@ -174,7 +188,7 @@ def cmd_batch(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> N
         return results, summary_path
 
     _, pos = bot.job_queue.add(f"Batch {len(tickers)} tickers {date_label}", run_with_callbacks, on_complete)
-    bot.send(chat_id, f"✓ Batch queued: {len(tickers)} tickers, position {pos}. Updates incoming...")
+    bot.send_plain(chat_id, f"✓ Batch 已加入队列（第 {pos} 位），共 {len(tickers)} 只股票，完成后逐一推送结果…")
 
 
 def cmd_list(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> None:
@@ -182,10 +196,19 @@ def cmd_list(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> No
     wl = load_watchlist(bot.config["watchlist_path"])
     tickers = wl.get("tickers", [])
     if not tickers:
-        bot.send(chat_id, "Watchlist is empty. Use /add TICKER to add stocks.")
+        bot.send_plain(chat_id, "Watchlist is empty. Use /add TICKER to add stocks.")
         return
-    lines = ["📋 *Watchlist*", ""] + [f"{i+1}\\. {t}" for i, t in enumerate(tickers)]
-    bot.send(chat_id, "\n".join(lines))
+    positions = wl.get("positions", {})
+    lines = [f"📋 Watchlist ({len(tickers)})", ""]
+    for i, t in enumerate(tickers):
+        pos = positions.get(t.upper())
+        if pos and pos.get("cost") and pos.get("qty"):
+            total = pos["cost"] * pos["qty"]
+            cur = _currency(t)
+            lines.append(f"{i+1}. {t}  {pos['qty']:,.0f}股 @ {cur}{pos['cost']:,.2f}  总 {cur}{total:,.0f}")
+        else:
+            lines.append(f"{i+1}. {t}  —")
+    bot.send_plain(chat_id, "\n".join(lines))
 
 
 def cmd_add(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> None:
@@ -212,7 +235,8 @@ def cmd_add(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> Non
             qty = float(args[2])
             add_tickers(bot.config["watchlist_path"], [ticker])
             update_position(bot.config["watchlist_path"], ticker, cost, qty)
-            position_lines.append(f"{ticker}：{qty:,.0f} 股 @ ${cost:,.2f}")
+            cur = _currency(ticker)
+            position_lines.append(f"{ticker}：{qty:,.0f} 股 @ {cur}{cost:,.2f}")
         except ValueError:
             # Treat all args as tickers
             tickers = [a.upper() for a in args]
@@ -238,7 +262,7 @@ def cmd_remove(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> 
         return
     updated = remove_tickers(bot.config["watchlist_path"], args)
     removed = [t.upper() for t in args]
-    bot.send(chat_id, f"Removed: {', '.join(removed)}\\. Watchlist now has {len(updated)} tickers\\.")
+    bot.send_plain(chat_id, f"Removed: {', '.join(removed)}. Watchlist now has {len(updated)} tickers.")
 
 
 def cmd_position(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> None:
@@ -274,7 +298,8 @@ def cmd_position(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -
             qty = float(args[2])
             update_position(bot.config["watchlist_path"], ticker, cost, qty)
             total = cost * qty
-            bot.send_plain(chat_id, f"✓ {ticker} 持仓已更新：{qty:,.0f} 股 @ ${cost:,.2f}（总成本 ${total:,.2f}）")
+            cur = _currency(ticker)
+            bot.send_plain(chat_id, f"✓ {ticker} 持仓已更新：{qty:,.0f} 股 @ {cur}{cost:,.2f}（总成本 {cur}{total:,.2f}）")
             return
         except ValueError:
             bot.send_plain(chat_id, "格式错误，请用：/position NVDA 125.50 100")
@@ -284,7 +309,8 @@ def cmd_position(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -
     pos = get_position(bot.config["watchlist_path"], ticker)
     if pos and pos.get("cost") and pos.get("qty"):
         total = pos["cost"] * pos["qty"]
-        bot.send_plain(chat_id, f"📋 {ticker} 当前持仓：{pos['qty']:,.0f} 股 @ ${pos['cost']:,.2f}（总成本 ${total:,.2f}）\n\n更新：/position {ticker} 成本价 数量\n清空：/position {ticker} clear")
+        cur = _currency(ticker)
+        bot.send_plain(chat_id, f"📋 {ticker} 当前持仓：{pos['qty']:,.0f} 股 @ {cur}{pos['cost']:,.2f}（总成本 {cur}{total:,.2f}）\n\n更新：/position {ticker} 成本价 数量\n清空：/position {ticker} clear")
     else:
         bot.send_plain(chat_id, f"📋 {ticker}：未持仓（NA）\n\n设置持仓：/position {ticker} 成本价 数量")
 
@@ -411,21 +437,21 @@ def cmd_status(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> 
     current = status.get("current")
     if current:
         mins, secs = divmod(current["elapsed_s"], 60)
-        lines.append(f"⚙️ *Running:* {current['description']} \\({mins:02d}:{secs:02d}\\)")
+        lines.append(f"⚙️ 运行中：{current['description']} ({mins:02d}:{secs:02d})")
     else:
-        lines.append("💤 No job running")
+        lines.append("💤 当前无任务")
 
     pending = status.get("pending", [])
     if pending:
-        lines.append(f"\n🕐 *Queue* \\({len(pending)}\\):")
+        lines.append(f"\n🕐 队列（{len(pending)} 个）：")
         for job in pending[:5]:
             lines.append(f"  • {job['description']}")
         if len(pending) > 5:
-            lines.append(f"  … and {len(pending)-5} more")
+            lines.append(f"  … 还有 {len(pending)-5} 个")
     else:
-        lines.append("Queue empty")
+        lines.append("队列为空")
 
-    bot.send(chat_id, "\n".join(lines))
+    bot.send_plain(chat_id, "\n".join(lines))
 
 
 # ── Dispatch table ────────────────────────────────────────────────────────────

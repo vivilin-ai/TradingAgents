@@ -128,8 +128,8 @@ def extract_reason(pm_decision: str, max_chars: int = 300) -> str:
         clean = re.sub(r"\*{1,2}|#{1,6}", "", line).strip()
         if not clean:
             continue
-        # Skip the short rating-only line (e.g. "Rating: Buy")
-        if re.match(r"^rating\s*[:：]", clean, re.IGNORECASE) and len(clean) < 40:
+        # Skip the short rating-only line (e.g. "Rating: Buy" / "评级: 减持")
+        if re.match(r"^(?:rating|评级)\s*[:：]", clean, re.IGNORECASE) and len(clean) < 40:
             continue
         lines.append(clean)
 

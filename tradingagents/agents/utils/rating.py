@@ -22,29 +22,51 @@ RATINGS_5_TIER: Tuple[str, ...] = (
 
 _RATING_SET = {r.lower() for r in RATINGS_5_TIER}
 
-# Matches "Rating: X" / "rating - X" / "Rating: **X**" — tolerates markdown
-# bold wrappers and either a colon or hyphen separator.
-_RATING_LABEL_RE = re.compile(r"rating.*?[:\-][\s*]*(\w+)", re.IGNORECASE)
+# Chinese equivalents mapped to canonical English ratings.
+_CHINESE_RATING_MAP: dict[str, str] = {
+    "买入": "Buy",
+    "增持": "Overweight",
+    "持有": "Hold",
+    "中性": "Hold",
+    "减持": "Underweight",
+    "卖出": "Sell",
+}
+
+# Matches "Rating: X" / "评级: X" / "rating - X" / "Rating: **X**"
+# Tolerates markdown bold wrappers, colon or hyphen, full-width colon.
+_RATING_LABEL_RE = re.compile(
+    r"(?:rating|评级)\s*\*{0,2}\s*[:\-：]\s*\*{0,2}(\w+)",
+    re.IGNORECASE,
+)
 
 
 def parse_rating(text: str, default: str = "Hold") -> str:
     """Heuristically extract a 5-tier rating from prose text.
 
     Two-pass strategy:
-    1. Look for an explicit "Rating: X" label (tolerant of markdown bold).
-    2. Fall back to the first 5-tier rating word found anywhere in the text.
+    1. Look for an explicit "Rating: X" / "评级: X" label line.
+    2. Fall back to the first 5-tier rating word (English or Chinese) in the text.
 
-    Returns a Title-cased rating string, or ``default`` if no rating word appears.
+    Returns a canonical English rating string, or ``default`` if none found.
     """
+    # Pass 1: explicit label
     for line in text.splitlines():
         m = _RATING_LABEL_RE.search(line)
-        if m and m.group(1).lower() in _RATING_SET:
-            return m.group(1).capitalize()
+        if m:
+            word = m.group(1)
+            if word.lower() in _RATING_SET:
+                return word.capitalize()
+            if word in _CHINESE_RATING_MAP:
+                return _CHINESE_RATING_MAP[word]
 
+    # Pass 2: first rating word anywhere in text
     for line in text.splitlines():
         for word in line.lower().split():
-            clean = word.strip("*:.,")
+            clean = word.strip("*:.,（）()【】")
             if clean in _RATING_SET:
                 return clean.capitalize()
+        for zh_word, en_rating in _CHINESE_RATING_MAP.items():
+            if zh_word in line:
+                return en_rating
 
     return default
