@@ -17,6 +17,23 @@ import yaml
 
 DEFAULT_ANALYSTS = ["market", "social", "news", "fundamentals"]
 
+_SUFFIX_TO_CURRENCY: dict[str, tuple[str, str]] = {
+    "HK": ("HK$", "HKD"),
+    "TO": ("CA$", "CAD"),
+    "AX": ("A$",  "AUD"),
+    "L":  ("£",   "GBP"),
+    "T":  ("¥",   "JPY"),
+    "SS": ("¥",   "CNY"),
+    "SZ": ("¥",   "CNY"),
+}
+
+def _position_currency(ticker: str) -> tuple[str, str]:
+    """Return (symbol, currency_code) for a ticker based on exchange suffix."""
+    parts = ticker.upper().rsplit(".", 1)
+    if len(parts) == 2:
+        return _SUFFIX_TO_CURRENCY.get(parts[1], ("$", "USD"))
+    return ("$", "USD")
+
 
 def load_watchlist(path: str) -> dict[str, Any]:
     """Load the watchlist file, returning defaults when it does not exist."""
@@ -98,11 +115,12 @@ def format_position_context(ticker: str, position: Optional[dict]) -> str:
         cost = float(position["cost"])
         qty = float(position["qty"])
         total = cost * qty
+        cur, currency_name = _position_currency(ticker)
         return (
             f"[Current Position]\n"
             f"The user currently holds {qty:,.0f} shares of {ticker} "
-            f"at an average cost of ${cost:,.2f} per share "
-            f"(total cost basis: ${total:,.2f}). "
+            f"at an average cost of {cur}{cost:,.2f} {currency_name} per share "
+            f"(total cost basis: {cur}{total:,.2f} {currency_name}). "
             f"Factor this into your position sizing and risk management recommendations. "
             f"Consider whether to add, hold, reduce, or exit the position."
         )
