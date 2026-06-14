@@ -32,20 +32,24 @@ _CHINESE_RATING_MAP: dict[str, str] = {
     "卖出": "Sell",
 }
 
-# Matches "Rating: X" / "评级: X" / "rating - X" / "Rating: **X**"
-# Tolerates markdown bold wrappers, colon or hyphen, full-width colon.
+# Matches rating labels in English and Chinese, including free-text PM output.
+# Handles: "Rating: X", "评级: X", "最终交易决策: X", "最终决策: X", "交易决策: X"
 _RATING_LABEL_RE = re.compile(
-    r"(?:rating|评级)\s*\*{0,2}\s*[:\-：]\s*\*{0,2}(\w+)",
+    r"(?:rating|评级|最终交易决策|最终决策|交易决策)\s*\*{0,2}\s*[:\-：]\s*\*{0,2}(\w+)",
     re.IGNORECASE,
 )
+
+# "持有X股" means "currently holding X shares" — not a Hold rating.
+_HOLD_AS_POSITION_RE = re.compile(r"持有\s*\d")
 
 
 def parse_rating(text: str, default: str = "Hold") -> str:
     """Heuristically extract a 5-tier rating from prose text.
 
     Two-pass strategy:
-    1. Look for an explicit "Rating: X" / "评级: X" label line.
-    2. Fall back to the first 5-tier rating word (English or Chinese) in the text.
+    1. Look for an explicit rating label (English or Chinese decision label).
+    2. Fall back to the first 5-tier rating word (English or Chinese) in the text,
+       skipping "持有X股" which means "currently holding X shares", not a Hold rating.
 
     Returns a canonical English rating string, or ``default`` if none found.
     """
@@ -67,6 +71,9 @@ def parse_rating(text: str, default: str = "Hold") -> str:
                 return clean.capitalize()
         for zh_word, en_rating in _CHINESE_RATING_MAP.items():
             if zh_word in line:
+                # Skip "持有X股" (currently holding X shares) — not a rating signal
+                if zh_word == "持有" and _HOLD_AS_POSITION_RE.search(line):
+                    continue
                 return en_rating
 
     return default

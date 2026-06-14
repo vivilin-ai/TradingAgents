@@ -112,32 +112,52 @@ def _build_report(state: dict[str, Any], ticker: str, trade_date: str) -> str:
 
 # ── Notification helpers ──────────────────────────────────────────────────────
 
-def extract_reason(pm_decision: str, max_chars: int = 300) -> str:
+def extract_reason(pm_decision: str, max_chars: int = 500) -> str:
     """Extract a concise reason from the Portfolio Manager decision text.
 
-    Strips the rating header line and markdown, then returns the first
-    substantive content up to max_chars characters.
+    Strips label-only lines (rating, 最终交易决策, 执行策略, etc.) and markdown,
+    then returns substantive content up to max_chars characters, cut at the
+    nearest sentence boundary (。！？) so the text doesn't end mid-sentence.
     """
     if not pm_decision:
         return ""
 
     import re
+
+    # Lines that are short label-only entries — skip them
+    _LABEL_RE = re.compile(
+        r"^(?:rating|评级|最终交易决策|最终决策|交易决策|执行策略|标的|"
+        r"action|price\s*target|time\s*horizon|recommendation|executive\s*summary|"
+        r"investment\s*thesis)\s*[:：]",
+        re.IGNORECASE,
+    )
+    # Pure separator lines (---, ===, ───, etc.)
+    _SEP_RE = re.compile(r"^[-=─*#\s]{2,}$")
+
     lines = []
     for line in pm_decision.splitlines():
-        # Remove markdown bold/header markers
-        clean = re.sub(r"\*{1,2}|#{1,6}", "", line).strip()
+        # Remove markdown bold/header/code markers
+        clean = re.sub(r"\*{1,2}|#{1,6}|`", "", line).strip()
         if not clean:
             continue
-        # Skip the short rating-only line (e.g. "Rating: Buy" / "评级: 减持")
-        if re.match(r"^(?:rating|评级)\s*[:：]", clean, re.IGNORECASE) and len(clean) < 40:
+        if _SEP_RE.match(clean):
+            continue
+        if _LABEL_RE.match(clean) and len(clean) < 60:
             continue
         lines.append(clean)
 
     text = " ".join(lines)
-    if len(text) > max_chars:
-        # Truncate at a word boundary
-        text = text[:max_chars].rsplit(" ", 1)[0].rstrip("，。,") + "…"
-    return text
+    if len(text) <= max_chars:
+        return text
+
+    cut = text[:max_chars]
+    # Prefer cutting at a Chinese/English sentence boundary
+    for punct in "。！？.!?":
+        idx = cut.rfind(punct)
+        if idx > max_chars // 2:
+            return cut[: idx + 1]
+    # Fall back to word boundary
+    return cut.rsplit(" ", 1)[0].rstrip("，。,") + "…"
 
 
 # ── Rate-limit detection ──────────────────────────────────────────────────────
