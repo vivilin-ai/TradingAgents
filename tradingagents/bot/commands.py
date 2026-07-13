@@ -82,6 +82,7 @@ def cmd_help(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> No
         "【分析】\n"
         "/analyze TICKER [--date YYYY-MM-DD] — 分析单只股票\n"
         "/batch [--date YYYY-MM-DD] — 分析全部自选列表\n"
+        "/scorecard — 查看最新周度记分卡\n"
         "/status — 查看当前任务进度\n\n"
         "【自选列表】\n"
         "/list — 查看自选列表及持仓\n"
@@ -373,6 +374,7 @@ def cmd_tasks(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> N
                 "用法：/tasks add 名称 对象 星期 时间\n\n"
                 "例：\n"
                 "/tasks add weekly watchlist 周六 08:00\n"
+                "/tasks add weekly_eval evaluate 周六 07:30\n"
                 "/tasks add daily_nvda NVDA 周一 07:30\n"
                 "/tasks add basket NVDA,AAPL,MSFT 周五 18:00"
             )
@@ -429,6 +431,27 @@ def cmd_tasks(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> N
         bot.send_plain(chat_id, "未知子命令。支持：list / add / remove / install / uninstall")
 
 
+def cmd_scorecard(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> None:
+    """Send the most recent weekly scorecard (reports/evaluation/<DATE>/scorecard.md)."""
+    chat_id = message["chat"]["id"]
+    from pathlib import Path
+
+    from tradingagents.default_config import DEFAULT_CONFIG
+
+    root = Path(DEFAULT_CONFIG["reports_root"]).expanduser() / "evaluation"
+    if root.exists():
+        for day_dir in sorted((d for d in root.iterdir() if d.is_dir()), reverse=True):
+            card = day_dir / "scorecard.md"
+            if card.exists():
+                _send_long(bot, chat_id, card.read_text(encoding="utf-8"))
+                return
+    bot.send_plain(
+        chat_id,
+        "暂无记分卡。先运行 tradingagents evaluate，"
+        "或配置每周评估任务：/tasks add weekly_eval evaluate 周六 07:30",
+    )
+
+
 def cmd_status(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> None:
     chat_id = message["chat"]["id"]
     status = bot.job_queue.get_status()
@@ -466,4 +489,5 @@ COMMANDS: dict[str, Any] = {
     "/position": cmd_position,
     "/tasks":    cmd_tasks,
     "/status":   cmd_status,
+    "/scorecard": cmd_scorecard,
 }

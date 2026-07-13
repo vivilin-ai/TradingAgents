@@ -1340,6 +1340,38 @@ def batch(
     console.print(f"\n[dim]Summary:[/dim] {summary_path}")
 
 
+@app.command("evaluate")
+def evaluate(
+    date: Optional[str] = typer.Option(None, "--date", help="Evaluation as-of date YYYY-MM-DD (default: today)"),
+    no_reflect: bool = typer.Option(False, "--no-reflect", help="Skip LLM reflections and lesson updates (settlement + scorecard only)"),
+):
+    """周度评估：用真实价格结算历史建议，生成记分卡、模拟组合与校准块。
+
+    详见 docs/weekly_iteration_plan.md。建议配置为每周任务：
+
+      tradingagents tasks add weekly_eval --evaluate --day 周六 --time 07:30
+    """
+    from tradingagents.eval.evaluator import WeeklyEvaluator
+
+    config = DEFAULT_CONFIG.copy()
+    llm = None
+    if not no_reflect:
+        try:
+            from tradingagents.llm_clients import create_llm_client
+            llm = create_llm_client(
+                provider=config["llm_provider"],
+                model=config["quick_think_llm"],
+                base_url=config.get("backend_url"),
+            ).get_llm()
+        except Exception as exc:
+            console.print(f"[yellow]LLM 不可用，跳过反思与经验更新：{exc}[/yellow]")
+
+    result = WeeklyEvaluator(config=config, llm=llm).run(as_of=date)
+    console.print(result["digest"])
+    if result.get("report_path"):
+        console.print(f"\n[dim]记分卡：[/dim]{result['report_path']}")
+
+
 @app.command("scheduled-run")
 def scheduled_run(
     task_name: str = typer.Argument(..., help="Scheduled task name from scheduled_tasks.yaml"),
@@ -1383,6 +1415,37 @@ def scheduled_run(
     # ── 启动通知 ──────────────────────────────────────────────────────────────
     import datetime as _dt
     run_date = date or _dt.date.today().strftime("%Y-%m-%d")
+
+    # ── 周度评估任务分支 ──────────────────────────────────────────────────────
+    if task.is_evaluate():
+        from tradingagents.eval.evaluator import WeeklyEvaluator
+
+        _notify(f"🧮 周度评估启动：{task_name}\n日期：{run_date}\n结算历史建议中…")
+        llm = None
+        try:
+            from tradingagents.llm_clients import create_llm_client
+            llm = create_llm_client(
+                provider=config["llm_provider"],
+                model=config["quick_think_llm"],
+                base_url=config.get("backend_url"),
+            ).get_llm()
+        except Exception as exc:
+            logger.warning("Evaluate LLM unavailable, settlement only: %s", exc)
+
+        try:
+            result = WeeklyEvaluator(config=config, llm=llm).run(as_of=date)
+        except Exception as exc:
+            logger.error("Weekly evaluation failed: %s", exc, exc_info=True)
+            _notify(f"❌ 周度评估失败：{task_name}\n{str(exc)[:300]}")
+            raise typer.Exit(1)
+
+        msg = result["digest"]
+        if result.get("report_path"):
+            msg += f"\n报告：{result['report_path']}"
+        _notify(msg)
+        console.print(msg)
+        return
+
     if task.is_watchlist():
         from tradingagents.batch.watchlist import load_watchlist
         wl = load_watchlist(config["watchlist_path"])

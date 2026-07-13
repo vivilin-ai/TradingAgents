@@ -18,8 +18,9 @@ class ScheduledTask:
     Attributes:
         name:     Unique identifier, used as sub-directory name in reports/.
         schedule: Cron expression, e.g. "0 8 * * 1-5".
-        target:   "watchlist", a single ticker like "NVDA", or a comma-
-                  separated list like "NVDA,AAPL,MSFT".
+        target:   "watchlist", "evaluate" (weekly settlement + scorecard run),
+                  a single ticker like "NVDA", or a comma-separated list like
+                  "NVDA,AAPL,MSFT".
         enabled:  Whether the task is installed in launchd/crontab.
         analysts: Optional analyst subset; defaults to all four when empty.
     """
@@ -32,14 +33,17 @@ class ScheduledTask:
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def tickers(self) -> Optional[list[str]]:
-        """Return explicit ticker list, or None when target is 'watchlist'."""
-        if self.target.lower() == "watchlist":
+        """Return explicit ticker list, or None for 'watchlist'/'evaluate'."""
+        if self.target.lower() in ("watchlist", "evaluate"):
             return None
         parts = [t.strip().upper() for t in self.target.split(",") if t.strip()]
         return parts or None
 
     def is_watchlist(self) -> bool:
         return self.target.lower() == "watchlist"
+
+    def is_evaluate(self) -> bool:
+        return self.target.lower() == "evaluate"
 
 
 # ── Persistence ───────────────────────────────────────────────────────────────

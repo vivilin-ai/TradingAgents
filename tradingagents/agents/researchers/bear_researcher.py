@@ -11,6 +11,13 @@ def create_bear_researcher(llm):
         news_report = state["news_report"]
         fundamentals_report = state["fundamentals_report"]
 
+        researcher_context = state.get("researcher_context", "")
+        lessons_block = (
+            f"\nCalibration data and lessons from your past settled decisions:\n{researcher_context}\n"
+            if researcher_context
+            else ""
+        )
+
         prompt = f"""You are a professional Bear Analyst in a high-stakes trading floor debate. 
 **STRICT ROLE-PLAY INSTRUCTIONS**: 
 - You MUST stay in character as a skeptical, data-driven bear analyst. 
@@ -31,7 +38,7 @@ Latest world affairs news: {news_report}
 Company fundamentals report: {fundamentals_report}
 Conversation history: {history}
 Last bull argument: {current_response}
-
+{lessons_block}
 DELIVER YOUR BEAR ARGUMENT NOW:
 """
 

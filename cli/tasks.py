@@ -111,6 +111,7 @@ def add_cmd(
     ticker: Optional[str] = typer.Option(None, "--ticker", help="单只股票，如 NVDA"),
     tickers: Optional[str] = typer.Option(None, "--tickers", help="多只股票，逗号分隔，如 NVDA,AAPL"),
     watchlist: bool = typer.Option(False, "--watchlist", help="分析整个自选列表"),
+    evaluate: bool = typer.Option(False, "--evaluate", help="周度评估：结算历史建议并生成记分卡"),
     disabled: bool = typer.Option(False, "--disabled", help="添加但暂不启用"),
 ) -> None:
     """添加定时任务。
@@ -119,6 +120,9 @@ def add_cmd(
 
       # 每周六上午 8 点分析全部自选列表
       tradingagents tasks add weekly_all --watchlist --day 周六 --time 08:00
+
+      # 每周六 07:30 先做周度评估（结算 + 记分卡 + 校准块）
+      tradingagents tasks add weekly_eval --evaluate --day 周六 --time 07:30
 
       # 每个工作日早 7 点分析 NVDA
       tradingagents tasks add daily_nvda --ticker NVDA --day 周一 --time 07:00
@@ -136,14 +140,16 @@ def add_cmd(
         raise typer.Exit(1)
 
     # 确定分析对象
-    if watchlist:
+    if evaluate:
+        target = "evaluate"
+    elif watchlist:
         target = "watchlist"
     elif tickers:
         target = tickers
     elif ticker:
         target = ticker
     else:
-        console.print("[red]请指定 --ticker、--tickers 或 --watchlist。[/red]")
+        console.print("[red]请指定 --ticker、--tickers、--watchlist 或 --evaluate。[/red]")
         raise typer.Exit(1)
 
     task = ScheduledTask(name=name, schedule=cron, target=target, enabled=not disabled)

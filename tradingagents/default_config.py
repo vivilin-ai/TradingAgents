@@ -59,6 +59,45 @@ DEFAULT_CONFIG = {
     # Include LLM cross-ticker narrative in batch summary.md
     "weekly_summary_narrative": True,
 
+    # ── Weekly evaluation loop (see docs/weekly_iteration_plan.md) ────────────
+    # Structured decision ledger consumed by the evaluate command.
+    "decision_ledger_path": os.getenv(
+        "TRADINGAGENTS_DECISION_LEDGER_PATH",
+        os.path.join(_TRADINGAGENTS_HOME, "memory", "decisions.jsonl"),
+    ),
+    # Curated cross-ticker lessons maintained by weekly meta-reflection.
+    "lessons_path": os.path.join(_TRADINGAGENTS_HOME, "memory", "lessons.md"),
+    # Latest calibration block injected into agent prompts at analysis time.
+    "calibration_path": os.path.join(_TRADINGAGENTS_HOME, "memory", "calibration.md"),
+    # Evaluation state: active strategy params, candidate streaks, bias flags.
+    "eval_state_path": os.path.join(_TRADINGAGENTS_HOME, "memory", "eval_state.json"),
+    # Settlement horizons in trading days.
+    "eval_horizons": [5, 10, 21],
+    # Benchmark ticker for alpha computation.
+    "eval_benchmark": "SPY",
+    # One-way transaction cost in basis points for the advice-following sim.
+    "eval_cost_bps": 10,
+    # Rolling window (weeks) for scorecard stats and the north-star IR.
+    "eval_window_weeks": 12,
+    # Rating -> target weight (fraction of the per-ticker capacity).
+    # None means "keep current position unchanged".
+    "rating_weight_map": {
+        "Buy": 1.0, "Overweight": 0.7, "Hold": None,
+        "Underweight": 0.3, "Sell": 0.0,
+    },
+    # Minimum settled samples per rating tier before calibration draws conclusions.
+    "calibration_min_samples": 8,
+    # |avg effective alpha| beyond which a tier is flagged as a systematic bias.
+    "calibration_alpha_threshold": 0.005,
+    # Minimum settled decisions before parameter iteration (P4) activates.
+    "iteration_min_decisions": 30,
+    # Weekly-IR margin a candidate mapping must beat the active one by.
+    "iteration_switch_margin": 0.003,
+    # Consecutive winning evals required before switching mappings (hysteresis).
+    "iteration_switch_streak": 2,
+    # Cap on curated lessons kept in lessons.md.
+    "lessons_max_entries": 20,
+
     # Max concurrent tickers in run_batch().
     # 1 = sequential (safe, slower); 3 = parallel (faster, higher API load)
     "batch_max_workers": 3,

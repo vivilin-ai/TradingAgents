@@ -18,6 +18,9 @@ from tradingagents.llm_clients import create_llm_client
 from tradingagents.agents import *
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.agents.utils.memory import TradingMemoryLog
+from tradingagents.agents.utils.rating import parse_rating
+from tradingagents.eval.calibration import LessonsPool, load_calibration
+from tradingagents.eval.ledger import DecisionLedger
 from tradingagents.agents.utils.agent_states import (
     AgentState,
     InvestDebateState,
@@ -99,6 +102,7 @@ class TradingAgentsGraph:
         self.quick_thinking_llm = quick_client.get_llm()
         
         self.memory_log = TradingMemoryLog(self.config)
+        self.decision_ledger = DecisionLedger(self.config)
 
         # Create tool nodes
         self.tool_nodes = self._create_tool_nodes()
@@ -304,11 +308,24 @@ class TradingAgentsGraph:
         """Execute the graph and write the resulting state to disk and memory log."""
         # Initialize state — inject memory log context for PM.
         past_context = self.memory_log.get_past_context(company_name)
+        # Calibration block + curated lessons (written by the weekly evaluate
+        # run) go to the researchers/managers; the PM additionally sees them
+        # appended to its full past context.
+        researcher_context = self._build_researcher_context()
+        if researcher_context:
+            past_context = (
+                past_context + "\n\n" + researcher_context
+                if past_context
+                else researcher_context
+            )
         # Prepend position / extra context so the PM sees it first.
         if extra_context:
             past_context = extra_context + ("\n\n" + past_context if past_context else "")
         init_agent_state = self.propagator.create_initial_state(
-            company_name, trade_date, past_context=past_context
+            company_name,
+            trade_date,
+            past_context=past_context,
+            researcher_context=researcher_context,
         )
         args = self.propagator.get_graph_args()
 
@@ -342,6 +359,17 @@ class TradingAgentsGraph:
             trade_date=trade_date,
             final_trade_decision=final_state["final_trade_decision"],
         )
+
+        # Mirror the decision into the structured ledger for weekly settlement.
+        try:
+            self.decision_ledger.record_decision(
+                ticker=company_name,
+                trade_date=str(trade_date),
+                rating=parse_rating(final_state["final_trade_decision"]),
+                decision_price=final_state.get("reference_price", 0.0),
+            )
+        except Exception as exc:
+            logger.warning("Could not write decision ledger entry: %s", exc)
 
         # Clear checkpoint on successful completion to avoid stale state.
         if self.config.get("checkpoint_enabled"):
@@ -390,6 +418,23 @@ class TradingAgentsGraph:
         log_path = directory / f"full_states_log_{trade_date}.json"
         with open(log_path, "w", encoding="utf-8") as f:
             json.dump(self.log_states_dict[str(trade_date)], f, indent=4)
+
+    def _build_researcher_context(self) -> str:
+        """Calibration block + curated lessons for researcher/manager prompts."""
+        parts = []
+        try:
+            block = load_calibration(self.config.get("calibration_path"))
+            if block:
+                parts.append(block)
+            lessons = LessonsPool(
+                self.config.get("lessons_path"),
+                int(self.config.get("lessons_max_entries", 20) or 20),
+            ).as_prompt_block()
+            if lessons:
+                parts.append(lessons)
+        except Exception as exc:
+            logger.warning("Could not load researcher context: %s", exc)
+        return "\n\n".join(parts)
 
     def process_signal(self, full_signal):
         """Process a signal to extract the core decision."""

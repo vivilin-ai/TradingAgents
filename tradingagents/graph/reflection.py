@@ -51,3 +51,41 @@ class Reflector:
             ),
         ]
         return self.quick_thinking_llm.invoke(messages).content
+
+    def weekly_meta_reflection(
+        self,
+        outcomes_summary: str,
+        previous_lessons: list[str],
+        max_lessons: int = 5,
+    ) -> list[str]:
+        """One weekly LLM call: propose new cross-ticker lessons.
+
+        Takes this week's settled outcomes and the existing lessons, returns
+        at most ``max_lessons`` NEW lessons (may be empty). The caller merges
+        them into the persistent pool, which handles dedupe and rotation.
+        """
+        prev = "\n".join(f"- {lesson}" for lesson in previous_lessons) or "(none)"
+        system = (
+            "You extract trading lessons for future analysts.\n"
+            f"Given this week's settled outcomes and the existing lessons, output at most {max_lessons} "
+            "NEW lessons as plain lines starting with '- '. Rules:\n"
+            "1. Never repeat or rephrase an existing lesson.\n"
+            "2. Add a lesson only when a pattern spans more than one decision — never "
+            "generalize from a single outcome.\n"
+            "3. Each lesson must be one concrete, actionable sentence.\n"
+            "If this week's outcomes support no new lesson, output nothing.\n"
+            "Output only the bullet lines, nothing else."
+        )
+        human = (
+            f"Existing lessons:\n{prev}\n\n"
+            f"This week's settled outcomes:\n{outcomes_summary}"
+        )
+        content = self.quick_thinking_llm.invoke(
+            [("system", system), ("human", human)]
+        ).content
+        lessons = []
+        for line in content.splitlines():
+            line = line.strip()
+            if line.startswith("- "):
+                lessons.append(line[2:].strip())
+        return lessons[:max_lessons]

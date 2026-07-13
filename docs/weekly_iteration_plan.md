@@ -1,5 +1,9 @@
 # 周度真实收益迭代方案（Weekly Outcome-Driven Iteration Plan）
 
+> **实施状态**：P0–P4 及接入层已全部实现（`tradingagents/eval/`、
+> `tradingagents evaluate` 命令、`--evaluate` 定时任务、Bot `/scorecard`）。
+> 本文档保留为设计依据；使用说明见 README「Weekly Evaluation Loop」一节。
+
 > 目标：让 agent 的最终裁决（Portfolio Manager 五档评级）每周根据市场真实价格结算、评估、校准，
 > 使得用户如果按照每次建议执行，长期收益（相对基准的 alpha）持续改善。
 >

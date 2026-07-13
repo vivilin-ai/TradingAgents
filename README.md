@@ -376,7 +376,52 @@ reports/
     summary.md
     NVDA.md, AAPL.md, …
     errors.md  (if any)
+  evaluation/<DATE>/          ← weekly evaluation
+    scorecard.md
 ```
+
+---
+
+## Weekly Evaluation Loop
+
+Every decision is mirrored into a structured ledger
+(`~/.tradingagents/memory/decisions.jsonl`). The `evaluate` command settles
+past advice against real prices (next-open execution, 5/10/21 trading-day
+horizons, alpha vs SPY), replays an advice-following portfolio, and feeds
+calibration data back into the agents. See
+[docs/weekly_iteration_plan.md](docs/weekly_iteration_plan.md) for the full design.
+
+```bash
+# One-off run
+tradingagents evaluate                # settle + scorecard + calibration
+tradingagents evaluate --no-reflect   # skip LLM reflections (settlement only)
+
+# Recommended weekly schedule: evaluate at 07:30, batch analysis at 08:00
+tradingagents tasks add weekly_eval --evaluate --day Saturday --time 07:30
+tradingagents tasks add weekly_all --watchlist --day Saturday --time 08:00
+tradingagents tasks install
+```
+
+What each weekly run does:
+
+1. **Settle** all due decisions at multiple horizons using real prices.
+2. **Reflect** — backfills LLM reflections into the decision log and curates a
+   capped cross-ticker lessons pool.
+3. **Scorecard** — per-tier hit rate / avg alpha, rating monotonicity check,
+   systematic-bias detection (a bias must recur across two consecutive
+   evaluations before it is acted on). Written to
+   `reports/evaluation/<DATE>/scorecard.md`; view via `/scorecard` in Telegram.
+4. **Simulate** — replays a portfolio that follows every rating
+   (Buy 100% / Overweight 70% / Hold keep / Underweight 30% / Sell 0% of the
+   per-ticker capacity, next-open execution, 10 bps cost) against SPY and
+   equal-weight benchmarks; the rolling 12-week information ratio is the
+   north-star metric.
+5. **Iterate** — compares candidate rating→weight mappings by replaying the
+   full ledger, and only switches after a candidate wins two consecutive
+   weeks by a margin, with at least 30 settled decisions (guards against
+   overfitting noise).
+6. **Calibrate** — writes a calibration block that the Bull/Bear researchers,
+   Research Manager and Portfolio Manager see on the next analysis run.
 
 ---
 
