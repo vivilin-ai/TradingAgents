@@ -392,6 +392,10 @@ calibration data back into the agents. See
 [docs/weekly_iteration_plan.md](docs/weekly_iteration_plan.md) for the full design.
 
 ```bash
+# First time: import decisions from past runs (trading_memory.md) and settle
+# them against historical prices — no need to accumulate samples from zero.
+tradingagents evaluate --backfill
+
 # One-off run
 tradingagents evaluate                # settle + scorecard + calibration
 tradingagents evaluate --no-reflect   # skip LLM reflections (settlement only)

@@ -1344,16 +1344,28 @@ def batch(
 def evaluate(
     date: Optional[str] = typer.Option(None, "--date", help="Evaluation as-of date YYYY-MM-DD (default: today)"),
     no_reflect: bool = typer.Option(False, "--no-reflect", help="Skip LLM reflections and lesson updates (settlement + scorecard only)"),
+    backfill: bool = typer.Option(False, "--backfill", help="First import all past decisions from trading_memory.md into the ledger"),
 ):
     """周度评估：用真实价格结算历史建议，生成记分卡、模拟组合与校准块。
 
     详见 docs/weekly_iteration_plan.md。建议配置为每周任务：
 
       tradingagents tasks add weekly_eval --evaluate --day 周六 --time 07:30
+
+    首次使用可加 --backfill，把过去运行留下的决策日志导入台账并立即结算，
+    无需从零积累样本。
     """
     from tradingagents.eval.evaluator import WeeklyEvaluator
 
     config = DEFAULT_CONFIG.copy()
+
+    if backfill:
+        from tradingagents.eval.backfill import backfill_from_memory_log
+        counts = backfill_from_memory_log(config)
+        console.print(
+            f"[green]✓ 回填完成：[/green]导入 {counts['imported']} 条历史决策"
+            f"（已存在跳过 {counts['skipped']} 条）"
+        )
     llm = None
     if not no_reflect:
         try:
