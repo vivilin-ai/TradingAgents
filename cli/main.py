@@ -1379,7 +1379,9 @@ def evaluate(
             console.print(f"[yellow]LLM 不可用，跳过反思与经验更新：{exc}[/yellow]")
 
     result = WeeklyEvaluator(config=config, llm=llm).run(as_of=date)
-    console.print(result["digest"])
+    # markup=False: the digest contains bracketed mapping names like
+    # [default] that rich would otherwise parse as style tags and drop.
+    console.print(result["digest"], markup=False)
     if result.get("report_path"):
         console.print(f"\n[dim]记分卡：[/dim]{result['report_path']}")
 
@@ -1394,17 +1396,27 @@ def scheduled_run(
     from tradingagents.batch.runner import BatchRunner
     import os, requests as _req, logging as _log
 
+    # launchd/cron capture stdout+stderr only; without a configured root
+    # handler every logger.info/error from the run is discarded, which is why
+    # failed jobs used to leave an empty log. Configure it before anything else
+    # so setup errors are captured too.
+    _log.basicConfig(
+        level=_log.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
+    logger = _log.getLogger(__name__)
+
     tasks = {t.name: t for t in load_tasks()}
     if task_name not in tasks:
-        console.print(f"[red]Unknown task '{task_name}'. Check scheduled_tasks.yaml.[/red]")
+        logger.error("Unknown task '%s'. Check scheduled_tasks.yaml.", task_name)
         raise typer.Exit(1)
 
     task = tasks[task_name]
     config = DEFAULT_CONFIG.copy()
     runner = BatchRunner(config=config)
 
-    logger = _log.getLogger(__name__)
-    logger.info("scheduled-run: %s", task_name)
+    logger.info("scheduled-run: %s (target=%s)", task_name, task.target)
 
     proxies = {}
     if os.getenv("HTTPS_PROXY"):
@@ -1455,7 +1467,7 @@ def scheduled_run(
         if result.get("report_path"):
             msg += f"\n报告：{result['report_path']}"
         _notify(msg)
-        console.print(msg)
+        console.print(msg, markup=False)
         return
 
     if task.is_watchlist():
@@ -1514,8 +1526,11 @@ def scheduled_run(
     # ── 完成通知 ──────────────────────────────────────────────────────────────
     completed = [r for r in results if not r.get("error")]
     errors = [r for r in results if r.get("error")]
+    all_failed = bool(results) and not completed
+
+    header = "❌ 定时任务失败" if all_failed else "📊 定时任务完成"
     lines = [
-        f"📊 定时任务完成：{task_name}",
+        f"{header}：{task_name}",
         f"日期：{run_date}",
         f"✅ {len(completed)}/{len(results)} 完成",
     ]
@@ -1523,13 +1538,25 @@ def scheduled_run(
         lines.append(f"  {r['ticker']}：{r.get('rating', '—')}")
     if errors:
         lines.append(f"❌ 失败：{', '.join(r['ticker'] for r in errors)}")
+        # Surface the first real error — without it the notification says a
+        # job "finished" while every ticker actually blew up.
+        lines.append(f"原因：{errors[0].get('error', '')[:200]}")
     if summary_path:
         lines.append(f"报告：{summary_path}")
     elif results and results[0].get("report_path"):
         lines.append(f"报告：{results[0]['report_path']}")
 
-    _notify("\n".join(lines))
-    console.print("\n".join(lines))
+    message = "\n".join(lines)
+    _notify(message)
+    # markup=False: ratings/targets are bracketed text rich would eat as tags.
+    console.print(message, markup=False)
+    for r in errors:
+        logger.error("%s failed: %s", r["ticker"], r.get("error"))
+
+    # Non-zero exit so launchd/cron records the failure instead of logging a
+    # success for a run where nothing worked.
+    if all_failed:
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

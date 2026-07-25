@@ -178,9 +178,29 @@ def task_status(tasks_path: Optional[str] = None) -> dict[str, bool]:
 
 # ── crontab helpers ───────────────────────────────────────────────────────────
 
+def crontab_available() -> bool:
+    """Whether a crontab binary exists on PATH."""
+    return shutil.which("crontab") is not None
+
+
 def _read_crontab() -> str:
-    result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+    """Current user crontab, or "" when empty or cron is not installed."""
+    if not crontab_available():
+        return ""
+    try:
+        result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+    except OSError:
+        return ""
     return result.stdout if result.returncode == 0 else ""
+
+
+def _write_crontab(lines: list[str]) -> None:
+    if not crontab_available():
+        raise RuntimeError(
+            "crontab not found on PATH — install cron, or run TradingAgents "
+            "scheduling on macOS where launchd is used instead."
+        )
+    subprocess.run(["crontab", "-"], input="\n".join(lines) + "\n", text=True)
 
 
 def _install_crontab(tasks: list[ScheduledTask], cmd: str) -> None:
@@ -190,10 +210,10 @@ def _install_crontab(tasks: list[ScheduledTask], cmd: str) -> None:
     lines = [l for l in existing.splitlines() if not any(f"{_CRON_MARKER}{n}" in l for n in names)]
     for task in tasks:
         lines.append(_cron_entry(task, cmd))
-    subprocess.run(["crontab", "-"], input="\n".join(lines) + "\n", text=True)
+    _write_crontab(lines)
 
 
 def _remove_crontab_all() -> None:
     existing = _read_crontab()
     lines = [l for l in existing.splitlines() if _CRON_MARKER not in l]
-    subprocess.run(["crontab", "-"], input="\n".join(lines) + "\n", text=True)
+    _write_crontab(lines)

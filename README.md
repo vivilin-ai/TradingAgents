@@ -221,7 +221,29 @@ tradingagents tasks add daily_nvda --ticker NVDA --schedule "30 7 * * 1-5"
 tradingagents tasks remove weekly_all
 tradingagents tasks install          # write to launchd/crontab — no restart needed
 tradingagents tasks uninstall
+
+tradingagents tasks doctor           # diagnose why a task did not run / failed
+tradingagents tasks run weekly_all   # run a task now, without waiting for the schedule
 ```
+
+### Troubleshooting scheduled tasks
+
+`tasks doctor` checks the whole chain and prints the last log lines plus a
+list of concrete problems:
+
+- task defined but disabled, or two tasks on the same schedule and target
+  (they run concurrently and trip API rate limits);
+- not installed into launchd/crontab, or not loaded by launchd;
+- the interpreter path or working directory baked into the plist no longer
+  exists — this happens after recreating `.venv` or moving/renaming the
+  project directory, and makes the job fail silently. Re-run `tasks install`
+  from the project root to repair it;
+- last exit status recorded by launchd;
+- missing API key: scheduled jobs do **not** inherit your shell environment,
+  they only read the `.env` file in the project root.
+
+Note that launchd does not run missed jobs while the Mac is shut down; a task
+scheduled for a time when the machine is off simply does not fire.
 
 ---
 
