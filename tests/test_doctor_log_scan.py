@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import re
 
-from cli.tasks import _last_run_segment, _scan_log_problems
+from cli.tasks import _last_run_segment, _scan_log_problems  # noqa: F401
 
 
 def scan(text: str, name: str = "weekly") -> list[str]:
-    return _scan_log_problems(name, text, re)
+    """Scan a single log the way doctor does: slice, then detect."""
+    return _scan_log_problems(name, _last_run_segment(text), re)
+
+
+def scan_pair(stdout: str, stderr: str, name: str = "weekly") -> list[str]:
+    """A task writes stdout and stderr to two files; doctor slices each."""
+    joined = "\n".join(_last_run_segment(t) for t in (stdout, stderr))
+    return _scan_log_problems(name, joined, re)
 
 
 def joined(problems: list[str]) -> str:
@@ -128,3 +135,29 @@ def test_current_fd_exhaustion_and_poisoned_cache_are_reported():
 def test_clean_log_reports_nothing():
     text = "scheduled-run: weekly\n📊 定时任务完成：weekly\n✅ 11/11 完成\n"
     assert scan(text) == []
+
+
+# ── stdout / stderr are separate files ───────────────────────────────────────
+
+def test_failure_detected_across_stdout_and_stderr_files():
+    """The run marker is logged to stderr while the completion summary is
+    printed to stdout; slicing the joined text would lose the summary."""
+    stdout = "📊 定时任务完成：weekly\n✅ 0/11 完成\n"
+    stderr = (
+        "2026-07-26 08:00:00 INFO cli.main: scheduled-run: weekly (target=watchlist)\n"
+        "openai.APIStatusError: Error code: 402 Insufficient Balance\n"
+    )
+    out = joined(scan_pair(stdout, stderr))
+    assert "全部失败（0/11）" in out
+    assert "余额不足" in out
+
+
+def test_stale_stderr_run_is_still_excluded_with_split_files():
+    stdout = "📊 定时任务完成：weekly\n✅ 11/11 完成\n"
+    stderr = (
+        "INFO cli.main: scheduled-run: weekly (target=watchlist)\n"
+        "Error: [Errno 24] Too many open files\n"
+        "INFO cli.main: scheduled-run: weekly (target=watchlist)\n"
+        "all good\n"
+    )
+    assert scan_pair(stdout, stderr) == []

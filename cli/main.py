@@ -1416,7 +1416,12 @@ def scheduled_run(
     config = DEFAULT_CONFIG.copy()
     runner = BatchRunner(config=config)
 
-    logger.info("scheduled-run: %s (target=%s)", task_name, task.target)
+    # Emitted to both streams: launchd keeps stdout and stderr in separate
+    # files, and each needs a run boundary so `tasks doctor` can tell this
+    # run's output from earlier ones in the same append-only log.
+    run_marker = f"scheduled-run: {task_name} (target={task.target})"
+    logger.info(run_marker)
+    console.print(run_marker, markup=False)
 
     proxies = {}
     if os.getenv("HTTPS_PROXY"):

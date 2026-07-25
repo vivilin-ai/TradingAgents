@@ -210,13 +210,15 @@ def _last_run_segment(text: str, fallback_lines: int = 200) -> str:
 
 
 def _scan_log_problems(task_name: str, text: str, _re) -> list[str]:
-    """Detect failure evidence in the most recent run of a task's logs.
+    """Detect failure evidence in a task's latest-run log text.
 
     launchd's exit status only covers the last run and older builds exited 0
     even when every ticker failed, so the logs themselves have to be scanned.
+    ``text`` must already be narrowed to the latest run by the caller — a
+    task writes stdout and stderr to two separate files, so each has to be
+    sliced on its own before they are joined.
     """
     found: list[str] = []
-    text = _last_run_segment(text)
 
     # Last completion line of the form "✅ 3/11 完成".
     ratios = _re.findall(r"✅\s*(\d+)\s*/\s*(\d+)\s*完成", text)
@@ -409,7 +411,10 @@ def doctor_cmd(
             mtime = _dt.datetime.fromtimestamp(log.stat().st_mtime)
             console.print(f"\n  [cyan]{log.name}[/cyan] [dim](最后写入 {mtime:%Y-%m-%d %H:%M})[/dim]")
             text = log.read_text(encoding="utf-8", errors="replace")
-            texts.append(text)
+            # Slice per file: the run marker is logged to stderr while the
+            # completion summary is printed to stdout, so slicing the joined
+            # text would drop everything before the marker's file.
+            texts.append(_last_run_segment(text))
             for line in text.splitlines()[-lines:]:
                 console.print(f"    {line}", markup=False, highlight=False)
         if texts:
