@@ -29,6 +29,10 @@ class OutcomeResolver:
         self.horizons = sorted(int(h) for h in config.get("eval_horizons", [5, 10, 21]))
         self.benchmark = config.get("eval_benchmark", "SPY")
         self.fetcher = fetcher or PriceFetcher()
+        # Calendar days after which an entry that still has no price data is
+        # abandoned. Must comfortably exceed the longest horizon so a genuine
+        # data outage is retried, not written off.
+        self.abandon_after_days = int(config.get("eval_abandon_after_days", 45))
 
     def resolve(
         self, ledger: DecisionLedger, as_of: Optional[str] = None
@@ -52,11 +56,29 @@ class OutcomeResolver:
         ).strftime("%Y-%m-%d")
         bench = self.fetcher.history(self.benchmark, earliest, fetch_end)
 
+        abandon_cutoff = (
+            datetime.strptime(as_of, "%Y-%m-%d")
+            - timedelta(days=self.abandon_after_days)
+        ).strftime("%Y-%m-%d")
+        abandon: list[tuple[str, str]] = []
+
         for ticker, entries in by_ticker.items():
             start = min(e["trade_date"] for e in entries)
             prices = self.fetcher.history(ticker, start, fetch_end)
             if prices.empty:
-                logger.warning("No price data for %s — skipping settlement", ticker)
+                stale = [e for e in entries if e["trade_date"] < abandon_cutoff]
+                if stale:
+                    # Long past due with no data at all: a delisted or mistyped
+                    # symbol. Retrying it every week only produces noise.
+                    logger.warning(
+                        "Abandoning %d unsettleable %s decision(s) older than %d days",
+                        len(stale), ticker, self.abandon_after_days,
+                    )
+                    abandon.extend((e["ticker"], e["trade_date"]) for e in stale)
+                else:
+                    logger.warning(
+                        "No price data for %s — skipping settlement (will retry)", ticker
+                    )
                 continue
             for entry in entries:
                 settlements.extend(self._settle_entry(entry, prices, bench))
@@ -64,6 +86,10 @@ class OutcomeResolver:
         applied = ledger.apply_settlements(settlements)
         if applied:
             logger.info("Settled %d (entry, horizon) pairs", applied)
+        if abandon:
+            ledger.mark_unresolvable(
+                abandon, f"no price data {self.abandon_after_days}+ days after decision"
+            )
         return settlements
 
     # ── internals ─────────────────────────────────────────────────────────────

@@ -104,16 +104,44 @@ class DecisionLedger:
         return entries
 
     def pending_entries(self) -> list[dict[str, Any]]:
-        """Entries with at least one unresolved horizon."""
+        """Entries with at least one unresolved horizon, excluding abandoned ones.
+
+        Entries marked unresolvable (no price data long after every horizon
+        came due) are skipped so a delisted or mistyped symbol is not retried
+        — and re-logged — on every weekly run forever.
+        """
         return [
             e for e in self.load_entries()
-            if any(str(h) not in e.get("outcomes", {}) for h in self._horizons)
+            if not e.get("unresolvable")
+            and any(str(h) not in e.get("outcomes", {}) for h in self._horizons)
         ]
 
     def resolved_entries(self, horizon: int) -> list[dict[str, Any]]:
         """Entries whose given horizon is settled."""
         key = str(horizon)
         return [e for e in self.load_entries() if key in e.get("outcomes", {})]
+
+    def mark_unresolvable(self, keys: list[tuple[str, str]], reason: str) -> int:
+        """Flag (ticker, trade_date) entries as permanently unsettleable."""
+        if not self._path or not self._path.exists() or not keys:
+            return 0
+        wanted = set(keys)
+        entries = self.load_entries()
+        marked = 0
+        for entry in entries:
+            key = (entry["ticker"], entry["trade_date"])
+            if key in wanted and not entry.get("unresolvable"):
+                entry["unresolvable"] = True
+                entry["unresolvable_reason"] = reason
+                marked += 1
+        if marked:
+            tmp = self._path.with_suffix(".tmp")
+            tmp.write_text(
+                "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries),
+                encoding="utf-8",
+            )
+            tmp.replace(self._path)
+        return marked
 
     # ── Update path ───────────────────────────────────────────────────────────
 

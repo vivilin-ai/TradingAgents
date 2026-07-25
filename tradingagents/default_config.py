@@ -75,6 +75,9 @@ DEFAULT_CONFIG = {
     "eval_horizons": [5, 10, 21],
     # Benchmark ticker for alpha computation.
     "eval_benchmark": "SPY",
+    # Calendar days after which a decision with no price data at all is
+    # abandoned instead of retried every week (delisted or mistyped symbol).
+    "eval_abandon_after_days": 45,
     # One-way transaction cost in basis points for the advice-following sim.
     "eval_cost_bps": 10,
     # Rolling window (weeks) for scorecard stats and the north-star IR.
