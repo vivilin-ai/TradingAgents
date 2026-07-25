@@ -14,7 +14,13 @@ load_dotenv()
 load_dotenv(".env.enterprise", override=False)
 
 from tradingagents.scheduler.tasks import ScheduledTask, load_tasks, add_task, remove_task
-from tradingagents.scheduler.installer import install_all, uninstall_all, task_status
+from tradingagents.scheduler.installer import (
+    install_all,
+    installed_task_names,
+    task_status,
+    uninstall_all,
+    uninstall_task,
+)
 
 app = typer.Typer(name="tasks", help="管理定时分析任务。", no_args_is_help=True)
 console = Console()
@@ -166,14 +172,19 @@ def add_cmd(
 def remove_cmd(
     name: str = typer.Argument(..., help="要删除的任务名称"),
 ) -> None:
-    """删除定时任务。"""
+    """删除定时任务，并立即从系统调度中卸载。"""
     try:
         remove_task(name)
-        console.print(f"[yellow]已删除任务 '{name}'。[/yellow]")
-        console.print("[dim]如已安装，请重新运行 tasks uninstall + tasks install 同步。[/dim]")
     except KeyError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
+
+    console.print(f"[yellow]已删除任务 '{name}'。[/yellow]")
+    # 同步卸载：否则 plist/crontab 条目会成为孤儿，继续按原计划运行。
+    if uninstall_task(name):
+        console.print(f"[green]✓[/green] 已从系统调度中卸载，不会再运行。")
+    else:
+        console.print("[dim]该任务原本未安装到系统调度。[/dim]")
 
 
 def _scan_log_problems(task_name: str, text: str, _re) -> list[str]:
@@ -299,6 +310,14 @@ def doctor_cmd(
         else:
             console.print(f"  [red]✗[/red] {t.name} 未安装")
             problems.append(f"任务 '{t.name}' 未写入系统调度，运行 tasks install")
+
+    # 系统里存在但 YAML 里已没有的任务：删除任务时没同步卸载留下的孤儿，
+    # 它们会继续按原计划运行且无人维护。
+    orphans = set(installed_task_names()) - {t.name for t in tasks}
+    for name in sorted(orphans):
+        msg = f"'{name}' 仍在系统调度中运行，但已不在任务列表里（孤儿任务）"
+        console.print(f"  [red]✗ {msg}[/red]")
+        problems.append(msg + f" —— 运行 tasks install 清理，或 tasks uninstall 全部移除")
 
     if is_mac:
         for t in tasks:

@@ -118,11 +118,59 @@ def _plist_content(task: ScheduledTask) -> str:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def install_all(tasks_path: Optional[str] = None) -> list[str]:
-    """Install all enabled tasks. Returns list of installed task names."""
-    tasks = [t for t in load_tasks(tasks_path) if t.enabled]
-    installed: list[str] = []
+def installed_task_names() -> list[str]:
+    """Names of tasks currently present in the system scheduler.
 
+    Read from launchd/crontab itself rather than the YAML, so tasks deleted
+    or disabled in the YAML are still discovered — otherwise they keep firing
+    with nothing left to clean them up.
+    """
+    if platform.system() == "Darwin":
+        if not _LAUNCHD_DIR.exists():
+            return []
+        return sorted(
+            p.stem[len(_LABEL_PREFIX):]
+            for p in _LAUNCHD_DIR.glob(f"{_LABEL_PREFIX}*.plist")
+        )
+    names = []
+    for line in _read_crontab().splitlines():
+        if _CRON_MARKER in line:
+            names.append(line.rsplit(_CRON_MARKER, 1)[1].strip())
+    return sorted(set(names))
+
+
+def uninstall_task(name: str) -> bool:
+    """Remove a single task from the system scheduler. True if it was there."""
+    if platform.system() == "Darwin":
+        plist = _plist_path(name)
+        if not plist.exists():
+            return False
+        subprocess.run(["launchctl", "unload", str(plist)], capture_output=True)
+        plist.unlink()
+        return True
+
+    existing = _read_crontab()
+    marker = f"{_CRON_MARKER}{name}"
+    lines = [l for l in existing.splitlines() if marker not in l]
+    if len(lines) == len(existing.splitlines()):
+        return False
+    _write_crontab(lines)
+    return True
+
+
+def install_all(tasks_path: Optional[str] = None) -> list[str]:
+    """Install all enabled tasks and prune anything else.
+
+    Tasks removed from the YAML — or disabled — are uninstalled here, so the
+    scheduler always mirrors the task file exactly. Returns installed names.
+    """
+    tasks = [t for t in load_tasks(tasks_path) if t.enabled]
+    wanted = {t.name for t in tasks}
+    for stale in installed_task_names():
+        if stale not in wanted:
+            uninstall_task(stale)
+
+    installed: list[str] = []
     if platform.system() == "Darwin":
         _LAUNCHD_DIR.mkdir(parents=True, exist_ok=True)
         for task in tasks:
@@ -141,20 +189,16 @@ def install_all(tasks_path: Optional[str] = None) -> list[str]:
 
 
 def uninstall_all(tasks_path: Optional[str] = None) -> list[str]:
-    """Uninstall all tasks. Returns list of removed task names."""
-    tasks = load_tasks(tasks_path)
+    """Uninstall every TradingAgents task found in the system scheduler."""
     removed: list[str] = []
 
     if platform.system() == "Darwin":
-        for task in tasks:
-            plist = _plist_path(task.name)
-            if plist.exists():
-                subprocess.run(["launchctl", "unload", str(plist)], capture_output=True)
-                plist.unlink()
-                removed.append(task.name)
+        for name in installed_task_names():
+            if uninstall_task(name):
+                removed.append(name)
     else:
+        removed = installed_task_names()
         _remove_crontab_all()
-        removed = [t.name for t in tasks]
 
     return removed
 
