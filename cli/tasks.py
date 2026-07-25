@@ -187,13 +187,36 @@ def remove_cmd(
         console.print("[dim]该任务原本未安装到系统调度。[/dim]")
 
 
+# Markers written at the start of each scheduled run, newest wins.
+_RUN_START_MARKERS = ("scheduled-run:", "🚀 定时任务启动", "🧮 周度评估启动")
+
+
+def _last_run_segment(text: str, fallback_lines: int = 200) -> str:
+    """Slice out just the most recent run from an append-only task log.
+
+    Task logs accumulate across weeks, so scanning the whole file reports
+    errors that were fixed long ago as if they were current. Older logs
+    predate the run-start marker, hence the tail fallback.
+    """
+    lines = text.splitlines()
+    start = None
+    for i in range(len(lines) - 1, -1, -1):
+        if any(marker in lines[i] for marker in _RUN_START_MARKERS):
+            start = i
+            break
+    if start is None:
+        return "\n".join(lines[-fallback_lines:])
+    return "\n".join(lines[start:])
+
+
 def _scan_log_problems(task_name: str, text: str, _re) -> list[str]:
-    """Detect failure evidence in a task's logs.
+    """Detect failure evidence in the most recent run of a task's logs.
 
     launchd's exit status only covers the last run and older builds exited 0
     even when every ticker failed, so the logs themselves have to be scanned.
     """
     found: list[str] = []
+    text = _last_run_segment(text)
 
     # Last completion line of the form "✅ 3/11 完成".
     ratios = _re.findall(r"✅\s*(\d+)\s*/\s*(\d+)\s*完成", text)
@@ -228,13 +251,15 @@ def _scan_log_problems(task_name: str, text: str, _re) -> list[str]:
         if _re.search(pattern, text, _re.IGNORECASE):
             found.append(f"'{task_name}': {hint}")
 
-    # Tickers whose prices could never be fetched — usually a wrong symbol.
-    bad = set(_re.findall(r"No price data for (\S+?)\s*—", text))
-    bad |= {m for m in _re.findall(r"\$?([A-Z0-9.\-]{2,12}): possibly delisted", text)}
-    for ticker in sorted(bad):
+    # Tickers whose prices could never be fetched. Only the resolver's own
+    # verdict counts: yfinance emits "possibly delisted" for any transient
+    # hiccup, including on tickers that a retry then fetches successfully,
+    # so matching that would flag most of a healthy watchlist.
+    bad = sorted(set(_re.findall(r"No price data for (\S+?)\s*—", text)))
+    if bad:
         found.append(
-            f"'{task_name}': 拿不到 {ticker} 的价格数据 —— 请确认代码是否正确"
-            "（例如 Marvell 的正确代码是 MRVL）"
+            f"'{task_name}': 整个结算窗口都拿不到 {'、'.join(bad)} 的价格数据 —— "
+            "请确认代码是否正确（例如 Marvell 应为 MRVL），否则这些标的无法结算"
         )
     return found
 
