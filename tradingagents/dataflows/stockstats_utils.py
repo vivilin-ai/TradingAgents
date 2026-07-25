@@ -66,9 +66,28 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
         f"{symbol}-YFin-data-{start_str}-{end_str}.csv",
     )
 
+    data = None
     if os.path.exists(data_file):
-        data = pd.read_csv(data_file, on_bad_lines="skip", encoding="utf-8")
-    else:
+        try:
+            data = pd.read_csv(data_file, on_bad_lines="skip", encoding="utf-8")
+        except (pd.errors.EmptyDataError, OSError) as exc:
+            # A download that failed mid-flight (rate limit, fd exhaustion)
+            # used to leave an empty file behind, and every later run then
+            # failed with "No columns to parse from file" forever. Treat an
+            # unreadable cache as a miss and refetch.
+            logger.warning("Discarding unreadable price cache %s: %s", data_file, exc)
+            data = None
+        else:
+            if data.empty or "Close" not in data.columns:
+                logger.warning("Discarding empty price cache %s", data_file)
+                data = None
+        if data is None:
+            try:
+                os.remove(data_file)
+            except OSError:
+                pass
+
+    if data is None:
         data = yf_retry(lambda: yf.download(
             symbol,
             start=start_str,
@@ -78,6 +97,12 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
             auto_adjust=True,
         ))
         data = data.reset_index()
+        # Never cache an empty result — it would poison every later run.
+        if data.empty or "Close" not in data.columns:
+            raise ValueError(
+                f"No price data returned for '{symbol}' "
+                f"({start_str}..{end_str}) — symbol may be invalid or delisted"
+            )
         data.to_csv(data_file, index=False, encoding="utf-8")
 
     data = _clean_dataframe(data)

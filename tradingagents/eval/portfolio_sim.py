@@ -75,16 +75,24 @@ def simulate(
             continue
         rebalances.setdefault(after[0], {})[e["ticker"]] = float(target)
 
+    # Capacity is divided across every ticker ever advised on, including ones
+    # with no price data (delisted, bad symbol). Excluding them would silently
+    # lever up the remaining positions.
     capacity = 1.0 / len(tickers)
     cost = cost_bps / 10_000.0
 
+    # Only tickers with price data can be held or marked.
+    investable = sorted(prices.keys())
+
     cash = 1.0
-    shares: dict[str, float] = {t: 0.0 for t in tickers}
+    shares: dict[str, float] = {t: 0.0 for t in investable}
     last_close: dict[str, float] = {}
     nav_points: list[tuple[pd.Timestamp, float]] = []
 
     def _px(t: str, day: pd.Timestamp, col: str) -> Optional[float]:
-        df = prices[t]
+        df = prices.get(t)
+        if df is None:
+            return None
         if day in df.index:
             v = df.at[day, col]
             return float(v) if not pd.isna(v) else None
@@ -102,7 +110,7 @@ def simulate(
                 continue
             nav_open = cash + sum(
                 shares[s] * (_px(s, day, "Open") or last_close.get(s, 0.0))
-                for s in tickers
+                for s in investable
             )
             target_value = w * capacity * nav_open
             trade_value = target_value - shares[t] * open_px
@@ -110,11 +118,11 @@ def simulate(
             cash -= trade_value + abs(trade_value) * cost
 
         # Mark at the close.
-        for t in tickers:
+        for t in investable:
             close_px = _px(t, day, "Close")
             if close_px is not None:
                 last_close[t] = close_px
-        nav = cash + sum(shares[t] * last_close.get(t, 0.0) for t in tickers)
+        nav = cash + sum(shares[t] * last_close.get(t, 0.0) for t in investable)
         nav_points.append((day, nav))
 
     nav_series = pd.Series(

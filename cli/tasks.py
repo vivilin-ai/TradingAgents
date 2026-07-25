@@ -176,6 +176,58 @@ def remove_cmd(
         raise typer.Exit(1)
 
 
+def _scan_log_problems(task_name: str, text: str, _re) -> list[str]:
+    """Detect failure evidence in a task's logs.
+
+    launchd's exit status only covers the last run and older builds exited 0
+    even when every ticker failed, so the logs themselves have to be scanned.
+    """
+    found: list[str] = []
+
+    # Last completion line of the form "✅ 3/11 完成".
+    ratios = _re.findall(r"✅\s*(\d+)\s*/\s*(\d+)\s*完成", text)
+    if ratios:
+        done, total = (int(x) for x in ratios[-1])
+        if total and done == 0:
+            found.append(
+                f"'{task_name}' 最近一次运行全部失败（0/{total}）—— 见下方原因"
+            )
+        elif done < total:
+            found.append(
+                f"'{task_name}' 最近一次运行部分失败（{done}/{total}）"
+            )
+
+    # Known error signatures, each with an actionable hint.
+    signatures = [
+        (r"Insufficient\s*Balance|402",
+         "模型 API 余额不足（HTTP 402）—— 请为当前 provider 充值，这会导致整批分析失败"),
+        (r"Errno 24|Too many open files",
+         "进程文件描述符耗尽（Errno 24）—— 调低 batch_max_workers，或用 ulimit -n 提高上限"),
+        (r"No columns to parse from file",
+         "价格缓存文件为空且被反复读取 —— 已修复为自动丢弃重下，删除 "
+         "~/.tradingagents/cache 下的空 csv 可立即恢复"),
+        (r"unable to open database file",
+         "yfinance 本地数据库无法打开（通常伴随文件描述符耗尽或权限问题）"),
+        (r"429|rate.?limit|RateLimit",
+         "触发 API 限速 —— 避免多个任务同时运行，或调低 batch_max_workers"),
+        (r"Traceback \(most recent call last\)",
+         "日志中存在未捕获异常的 traceback，需要查看上方完整堆栈"),
+    ]
+    for pattern, hint in signatures:
+        if _re.search(pattern, text, _re.IGNORECASE):
+            found.append(f"'{task_name}': {hint}")
+
+    # Tickers whose prices could never be fetched — usually a wrong symbol.
+    bad = set(_re.findall(r"No price data for (\S+?)\s*—", text))
+    bad |= {m for m in _re.findall(r"\$?([A-Z0-9.\-]{2,12}): possibly delisted", text)}
+    for ticker in sorted(bad):
+        found.append(
+            f"'{task_name}': 拿不到 {ticker} 的价格数据 —— 请确认代码是否正确"
+            "（例如 Marvell 的正确代码是 MRVL）"
+        )
+    return found
+
+
 @app.command("doctor")
 def doctor_cmd(
     lines: int = typer.Option(20, "--lines", "-n", help="每个日志文件显示的末尾行数"),
@@ -223,6 +275,20 @@ def doctor_cmd(
             problems.append(msg)
         else:
             seen[key] = t.name
+
+    # 时间不同但对象相同：不会并发，但每轮分析都要花模型额度，重复即浪费
+    by_target: dict[str, list[str]] = {}
+    for t in tasks:
+        if not t.is_evaluate():
+            by_target.setdefault(t.target.lower(), []).append(t.name)
+    for target, names in by_target.items():
+        if len(names) > 1:
+            msg = (
+                f"任务 {'、'.join(names)} 分析的是同一对象（{target}），"
+                "每次运行都消耗模型额度，建议只保留一个"
+            )
+            console.print(f"  [yellow]⚠ {msg}[/yellow]")
+            problems.append(msg)
 
     # ── 2. 系统调度安装状态 ───────────────────────────────────────────────────
     console.print("\n[bold]2. 系统调度安装状态[/bold]")
@@ -286,9 +352,11 @@ def doctor_cmd(
     # ── 3. 运行日志 ───────────────────────────────────────────────────────────
     console.print(f"\n[bold]3. 运行日志[/bold] [dim]({_LOG_DIR})[/dim]")
     import datetime as _dt
+    import re as _re
 
     any_log = False
     for t in tasks:
+        texts: list[str] = []
         for suffix in ("", "_error"):
             log = _LOG_DIR / f"{t.name}{suffix}.log"
             if not log.exists() or log.stat().st_size == 0:
@@ -296,9 +364,12 @@ def doctor_cmd(
             any_log = True
             mtime = _dt.datetime.fromtimestamp(log.stat().st_mtime)
             console.print(f"\n  [cyan]{log.name}[/cyan] [dim](最后写入 {mtime:%Y-%m-%d %H:%M})[/dim]")
-            tail = log.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:]
-            for line in tail:
+            text = log.read_text(encoding="utf-8", errors="replace")
+            texts.append(text)
+            for line in text.splitlines()[-lines:]:
                 console.print(f"    {line}", markup=False, highlight=False)
+        if texts:
+            problems.extend(_scan_log_problems(t.name, "\n".join(texts), _re))
     if not any_log:
         console.print("  [yellow]⚠ 没有任何日志内容 —— 任务可能从未真正启动过[/yellow]")
         problems.append(
