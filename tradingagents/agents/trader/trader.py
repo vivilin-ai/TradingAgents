@@ -10,7 +10,7 @@ from tradingagents.agents.schemas import TraderProposal, render_trader_proposal
 from tradingagents.agents.utils.agent_utils import build_instrument_context
 from tradingagents.agents.utils.structured import (
     bind_structured,
-    invoke_structured_or_freetext,
+    invoke_structured,
 )
 
 
@@ -44,7 +44,7 @@ def create_trader(llm):
             },
         ]
 
-        trader_plan = invoke_structured_or_freetext(
+        trader_plan = invoke_structured(
             structured_llm,
             llm,
             messages,

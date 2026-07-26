@@ -6,7 +6,7 @@ from tradingagents.agents.schemas import ResearchPlan, render_research_plan
 from tradingagents.agents.utils.agent_utils import build_instrument_context
 from tradingagents.agents.utils.structured import (
     bind_structured,
-    invoke_structured_or_freetext,
+    invoke_structured,
 )
 
 
@@ -46,7 +46,7 @@ Commit to a clear stance whenever the debate's strongest arguments warrant one; 
 **Debate History:**
 {history}"""
 
-        investment_plan = invoke_structured_or_freetext(
+        investment_plan = invoke_structured(
             structured_llm,
             llm,
             prompt,

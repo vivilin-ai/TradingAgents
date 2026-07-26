@@ -32,6 +32,22 @@ def _dummy_api_keys(monkeypatch):
 
 
 @pytest.fixture()
+def lenient_structured_output():
+    """Allow unvalidated free-text decisions.
+
+    Structured output is mandatory by default: an investment decision whose
+    rating had to be inferred from prose can contradict its own reasoning.
+    Tests that exercise the opt-out path request this fixture explicitly.
+    """
+    from tradingagents.dataflows import config as dataflows_config
+
+    original = dataflows_config.get_config().get("require_structured_output", True)
+    dataflows_config.set_config({"require_structured_output": False})
+    yield
+    dataflows_config.set_config({"require_structured_output": original})
+
+
+@pytest.fixture()
 def mock_llm_client():
     client = MagicMock()
     client.get_llm.return_value = MagicMock()

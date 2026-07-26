@@ -88,9 +88,11 @@ def test_empty_text_is_passed_through():
     llm.invoke.assert_not_called()
 
 
-def test_portfolio_manager_emits_a_labelled_decision_on_freetext_fallback():
-    """The full node path: structured output unavailable, prose reply, and the
-    stored decision still carries an authoritative rating."""
+def test_portfolio_manager_emits_a_labelled_decision_on_freetext_fallback(
+    lenient_structured_output,
+):
+    """The opted-in prose path: even there the stored decision must carry an
+    authoritative rating rather than one inferred from the write-up."""
     from tradingagents.agents.managers.portfolio_manager import (
         create_portfolio_manager,
     )

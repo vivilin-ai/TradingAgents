@@ -1,19 +1,18 @@
-"""Shared helpers for invoking an agent with structured output and a graceful fallback.
+"""Shared helpers for invoking the decision-making agents with structured output.
 
-The Portfolio Manager, Trader, and Research Manager all follow the same
-canonical pattern:
+The Portfolio Manager, Trader, and Research Manager all produce a typed
+Pydantic instance via ``with_structured_output(Schema)``, so their ratings come
+from a schema enum rather than from prose that has to be interpreted.
 
-1. At agent creation, wrap the LLM with ``with_structured_output(Schema)``
-   so the model returns a typed Pydantic instance. If the provider does
-   not support structured output (rare; mostly older Ollama models), the
-   wrap is skipped and the agent uses free-text generation instead.
-2. At invocation, run the structured call and render the result back to
-   markdown. If the structured call itself fails for any reason
-   (malformed JSON from a weak model, transient provider issue), fall
-   back to a plain ``llm.invoke`` so the pipeline never blocks.
+**Structured output is mandatory by default.** These agents issue investment
+recommendations: a decision whose rating had to be inferred from free text can
+contradict its own reasoning, and silently substituting prose for a validated
+decision hides that from the user. So a structured call is retried a bounded
+number of times and then raises, failing the run loudly instead of improvising.
 
-Centralising the pattern here keeps the agent factories small and ensures
-all three agents log the same warnings when fallback fires.
+Setting ``require_structured_output`` to False restores the old lenient
+behaviour (prose plus explicit format instructions) for providers that cannot
+do structured output at all; every such degradation is logged as a warning.
 """
 
 from __future__ import annotations
@@ -144,50 +143,99 @@ def _append_instructions(prompt: Any, instructions: str) -> Any:
     return prompt
 
 
-def bind_structured(llm: Any, schema: type[T], agent_name: str) -> Optional[Any]:
-    """Return ``llm.with_structured_output(schema)`` or ``None`` if unsupported.
+class StructuredOutputUnavailable(RuntimeError):
+    """The model could not return a validated decision.
 
-    Logs a warning when the binding fails so the user understands the agent
-    will use free-text generation for every call instead of one-shot fallback.
+    Raised instead of quietly producing prose, so a failed decision surfaces as
+    a failed run rather than as advice the pipeline invented a rating for.
+    """
+
+
+def _require_structured() -> bool:
+    """Whether structured output is mandatory (default: yes)."""
+    try:
+        from tradingagents.dataflows.config import get_config
+
+        return bool(get_config().get("require_structured_output", True))
+    except Exception:  # config not initialised (e.g. isolated unit test)
+        return True
+
+
+def bind_structured(llm: Any, schema: type[T], agent_name: str) -> Optional[Any]:
+    """Return ``llm.with_structured_output(schema)``.
+
+    Raises :class:`StructuredOutputUnavailable` when the provider cannot do
+    structured output at all, so the misconfiguration is reported up front
+    rather than silently turning every decision into unvalidated prose.
+    Returns ``None`` only when the requirement has been explicitly waived.
     """
     try:
         return llm.with_structured_output(schema)
     except (NotImplementedError, AttributeError) as exc:
-        logger.info(
+        if _require_structured():
+            raise StructuredOutputUnavailable(
+                f"{agent_name}: this model does not support structured output "
+                f"({exc}). Refusing to generate an investment decision as "
+                "unvalidated free text. Use a model that supports structured "
+                "output, or set require_structured_output=False to allow it."
+            ) from exc
+        logger.warning(
             "%s: provider does not support with_structured_output (%s); "
-            "falling back to free-text generation",
+            "falling back to free-text generation because "
+            "require_structured_output is disabled",
             agent_name, exc,
         )
         return None
 
 
-def invoke_structured_or_freetext(
+def invoke_structured(
     structured_llm: Optional[Any],
     plain_llm: Any,
     prompt: Any,
     render: Callable[[T], str],
     agent_name: str,
     schema: Optional[type[BaseModel]] = None,
+    max_attempts: int = 3,
 ) -> str:
-    """Run the structured call and render to markdown; fall back to free-text on any failure.
+    """Run the structured call and render the validated result to markdown.
 
-    ``prompt`` is whatever the underlying LLM accepts (a string for chat
-    invocations, a list of message dicts for chat models that take that
-    shape). The same value is forwarded to the free-text path so the
-    fallback sees the same input the structured call did.
+    A structured call can fail transiently (truncated or malformed JSON), so it
+    is retried up to ``max_attempts`` times with the identical prompt. If every
+    attempt fails, :class:`StructuredOutputUnavailable` is raised — the run is
+    reported as failed rather than answered with improvised prose.
+
+    ``prompt`` is whatever the underlying LLM accepts: a string, or a list of
+    messages for chat models that take that shape.
     """
     if structured_llm is not None:
-        try:
-            result = structured_llm.invoke(prompt)
-            if result is None:
-                raise ValueError("LLM returned None for structured output")
-            return render(result)
-        except Exception as exc:
-            logger.warning(
-                "%s: structured-output invocation failed (%s); result was %s. retrying once as free text",
-                agent_name, exc, type(result) if 'result' in locals() else 'N/A'
-            )
+        last_error: Optional[Exception] = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                result = structured_llm.invoke(prompt)
+                if result is None:
+                    raise ValueError("model returned no structured result")
+                return render(result)
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "%s: structured output attempt %d/%d failed: %s",
+                    agent_name, attempt, max_attempts, exc,
+                )
+        if _require_structured():
+            raise StructuredOutputUnavailable(
+                f"{agent_name}: structured output failed {max_attempts} times "
+                f"({last_error}). Refusing to fall back to unvalidated free "
+                "text for an investment decision."
+            ) from last_error
+    elif _require_structured():
+        raise StructuredOutputUnavailable(
+            f"{agent_name}: no structured-output binding is available."
+        )
 
+    logger.warning(
+        "%s: emitting an unvalidated free-text decision because "
+        "require_structured_output is disabled", agent_name,
+    )
     if schema is not None:
         prompt = _append_instructions(prompt, build_format_instructions(schema))
     response = plain_llm.invoke(prompt)

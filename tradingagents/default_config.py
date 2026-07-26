@@ -18,6 +18,13 @@ DEFAULT_CONFIG = {
     # When None each provider client falls back to its own default endpoint.
     "backend_url": None,
 
+    # Decision-making agents (Research Manager, Trader, Portfolio Manager) must
+    # return a validated, schema-typed decision. When False, a model that
+    # cannot produce one falls back to free text and its rating has to be
+    # inferred from prose — which can contradict the reasoning it came from.
+    # Keep this on for anything that issues investment recommendations.
+    "require_structured_output": True,
+
     # Sampling temperature for every agent call. 0 keeps a re-run of the same
     # ticker and date reproducible; without it the provider default (typically
     # 1.0) makes each run return a different decision. Ignored by reasoning

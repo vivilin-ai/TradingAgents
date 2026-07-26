@@ -4,8 +4,12 @@ Uses LangChain's ``with_structured_output`` so the LLM produces a typed
 ``PortfolioDecision`` directly, in a single call.  The result is rendered
 back to markdown for storage in ``final_trade_decision`` so memory log,
 CLI display, and saved reports continue to consume the same shape they do
-today.  When a provider does not expose structured output, the agent falls
-back gracefully to free-text generation.
+today.
+
+The rating therefore comes from a schema enum, not from prose.  If the model
+cannot return a validated decision the node raises rather than improvising:
+this is the agent that issues the recommendation the user acts on, so a
+failed run must look like a failure.
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ from tradingagents.agents.utils.agent_utils import (
 from tradingagents.agents.utils.structured import (
     bind_structured,
     ensure_rating_line,
-    invoke_structured_or_freetext,
+    invoke_structured,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,7 +73,7 @@ def create_portfolio_manager(llm):
 
 Be decisive and ground every conclusion in specific evidence from the analysts.{get_language_instruction()}"""
 
-        final_trade_decision = invoke_structured_or_freetext(
+        final_trade_decision = invoke_structured(
             structured_llm,
             llm,
             prompt,

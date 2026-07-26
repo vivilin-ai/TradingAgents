@@ -147,7 +147,19 @@ class TestTraderAgent:
         prompt = captured["prompt"]
         assert any("Proposed Investment Plan" in m["content"] for m in prompt)
 
-    def test_falls_back_to_freetext_when_structured_unavailable(self):
+    def test_refuses_freetext_when_structured_unavailable(self):
+        """A model that cannot return a validated proposal must fail loudly
+        rather than have its prose accepted as a trade instruction."""
+        from tradingagents.agents.utils.structured import StructuredOutputUnavailable
+
+        llm = MagicMock()
+        llm.with_structured_output.side_effect = NotImplementedError("provider unsupported")
+        with pytest.raises(StructuredOutputUnavailable, match="does not support"):
+            create_trader(llm)
+
+    def test_freetext_allowed_only_when_explicitly_opted_in(
+        self, lenient_structured_output
+    ):
         plain_response = (
             "**Action**: Sell\n\nGuidance cut hits margins.\n\n"
             "FINAL TRANSACTION PROPOSAL: **SELL**"
@@ -222,7 +234,17 @@ class TestResearchManagerAgent:
         for tier in ("Buy", "Overweight", "Hold", "Underweight", "Sell"):
             assert f"**{tier}**" in prompt, f"missing {tier} in prompt"
 
-    def test_falls_back_to_freetext_when_structured_unavailable(self):
+    def test_refuses_freetext_when_structured_unavailable(self):
+        from tradingagents.agents.utils.structured import StructuredOutputUnavailable
+
+        llm = MagicMock()
+        llm.with_structured_output.side_effect = NotImplementedError("provider unsupported")
+        with pytest.raises(StructuredOutputUnavailable, match="does not support"):
+            create_research_manager(llm)
+
+    def test_freetext_allowed_only_when_explicitly_opted_in(
+        self, lenient_structured_output
+    ):
         plain_response = "**Recommendation**: Sell\n\n**Rationale**: ...\n\n**Strategic Actions**: ..."
         llm = MagicMock()
         llm.with_structured_output.side_effect = NotImplementedError("provider unsupported")

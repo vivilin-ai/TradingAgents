@@ -20,7 +20,7 @@ from tradingagents.agents.schemas import (
 from tradingagents.agents.utils.rating import parse_rating, parse_rating_or_none
 from tradingagents.agents.utils.structured import (
     build_format_instructions,
-    invoke_structured_or_freetext,
+    invoke_structured,
 )
 
 
@@ -81,7 +81,7 @@ def test_missing_rating_returns_none_instead_of_silent_hold():
     assert parse_rating("本周成交量下降。") == "Hold"
 
 
-# ── free-text fallback keeps the rating line ─────────────────────────────────
+# ── opted-in free-text path keeps the rating line ────────────────────────────
 
 def test_format_instructions_enumerate_enum_choices():
     text = build_format_instructions(PortfolioDecision)
@@ -97,13 +97,14 @@ def test_format_instructions_for_other_schemas():
     )
 
 
-def test_fallback_prompt_carries_format_instructions():
+def test_fallback_prompt_carries_format_instructions(lenient_structured_output):
     """Without the schema's field descriptions the fallback produced
-    unlabelled prose, which is what forced the rating to be guessed."""
+    unlabelled prose, which is what forced the rating to be guessed.
+    Reachable only when structured output has been explicitly waived."""
     plain = MagicMock()
     plain.invoke.return_value = MagicMock(content="**Rating**: Sell\n\n估值透支。")
 
-    out = invoke_structured_or_freetext(
+    out = invoke_structured(
         None, plain, "analyse 0100.HK", lambda d: "", "Portfolio Manager",
         schema=PortfolioDecision,
     )
@@ -114,10 +115,10 @@ def test_fallback_prompt_carries_format_instructions():
     assert parse_rating(out) == "Sell"
 
 
-def test_fallback_appends_instructions_to_message_lists():
+def test_fallback_appends_instructions_to_message_lists(lenient_structured_output):
     plain = MagicMock()
     plain.invoke.return_value = MagicMock(content="**Action**: Sell")
-    invoke_structured_or_freetext(
+    invoke_structured(
         None, plain, [("human", "go")], lambda d: "", "Trader", schema=TraderProposal,
     )
     sent = plain.invoke.call_args[0][0]
@@ -135,7 +136,7 @@ def test_structured_path_is_unchanged_and_authoritative():
     )
     from tradingagents.agents.schemas import render_pm_decision
 
-    out = invoke_structured_or_freetext(
+    out = invoke_structured(
         structured, MagicMock(), "p", render_pm_decision, "Portfolio Manager",
         schema=PortfolioDecision,
     )

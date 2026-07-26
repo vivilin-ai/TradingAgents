@@ -514,6 +514,7 @@ print(decision)
 | `llm_provider` | `"openai"` | `TRADINGAGENTS_LLM_PROVIDER` | LLM provider |
 | `deep_think_llm` | `"gpt-5.4"` | `TRADINGAGENTS_DEEP_THINK_LLM` | Model for reasoning |
 | `quick_think_llm` | `"gpt-5.4-mini"` | `TRADINGAGENTS_QUICK_THINK_LLM` | Model for fast tasks |
+| `require_structured_output` | `True` | — | Decision agents must return a schema-validated decision. On failure the run errors out instead of falling back to free text — see below |
 | `llm_temperature` | `0` | `TRADINGAGENTS_LLM_TEMPERATURE` | Sampling temperature; 0 keeps re-runs of the same ticker and date reproducible. Omitted for reasoning models, which fix it internally |
 | `output_language` | `"Chinese"` | — | Report language |
 | `reports_root` | `"reports"` | `TRADINGAGENTS_REPORTS_ROOT` | Report root directory |
@@ -523,6 +524,32 @@ print(decision)
 | `max_risk_discuss_rounds` | `1` | — | Risk debate rounds |
 | `checkpoint_enabled` | `False` | — | LangGraph crash-resume |
 | `bot_poll_interval` | `2` | — | Bot polling interval (seconds) |
+
+---
+
+## Decision Integrity
+
+The Research Manager, Trader and Portfolio Manager return a schema-validated
+decision, so the rating comes from an enum rather than from prose that has to
+be interpreted. This is enforced, not best-effort:
+
+- A structured call is retried up to 3 times with the identical prompt.
+- If every attempt fails — or the model cannot do structured output at all —
+  the run **raises**. The ticker is reported as failed in the CLI and in the
+  Telegram notification. It is never answered with improvised prose, because
+  a rating inferred from free text can contradict the reasoning it was read
+  from.
+- A Portfolio Manager decision that ends up empty (its output failed
+  validation on every retry) is refused by the decision log and fails the run,
+  rather than being recorded as a `Hold` nobody argued for.
+
+`require_structured_output=False` restores prose output for providers that
+cannot do structured output at all. Every such run is logged as a warning; do
+not use it for advice you intend to act on.
+
+Reproducibility: `llm_temperature` defaults to `0`, so re-running the same
+ticker and date returns the same decision. Analyst inputs are still fetched
+live, so results can differ if the underlying news or prices have changed.
 
 ---
 
