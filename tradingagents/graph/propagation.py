@@ -1,11 +1,15 @@
 # TradingAgents/graph/propagation.py
 
+import logging
+from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from tradingagents.agents.utils.agent_states import (
     AgentState,
     InvestDebateState,
     RiskDebateState,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class Propagator:
@@ -58,24 +62,40 @@ class Propagator:
             "sentiment_report": "",
             "news_report": "",
             "retry_count": 0,
-            "reference_price": self._fetch_current_price(company_name),
+            "reference_price": self._fetch_reference_price(
+                company_name, str(trade_date)
+            ),
         }
 
-    def _fetch_current_price(self, ticker: str) -> float:
-        """Fetch the latest close price for baseline comparison."""
+    def _fetch_reference_price(self, ticker: str, trade_date: str) -> float:
+        """Close of the last trading day at or before ``trade_date``.
+
+        This is the baseline the hallucination check compares reported prices
+        against, so it has to match the date being analysed. Using the live
+        quote instead meant a run for a past date was validated against
+        today's price: once the stock had moved more than the tolerance, every
+        correctly-priced report was rejected and the run failed.
+        """
         import yfinance as yf
+
         try:
-            stock = yf.Ticker(ticker)
-            # Try to get the fast info price first
-            price = stock.fast_info.get("last_price")
-            if not price:
-                # Fallback to history
-                hist = stock.history(period="1d")
-                if not hist.empty:
-                    price = hist["Close"].iloc[-1]
-            return float(price) if price else 0.0
-        except Exception:
-            return 0.0
+            end = datetime.strptime(trade_date, "%Y-%m-%d") + timedelta(days=1)
+            # 10 days back covers weekends and holiday runs.
+            start = end - timedelta(days=10)
+            hist = yf.Ticker(ticker).history(
+                start=start.strftime("%Y-%m-%d"),
+                end=end.strftime("%Y-%m-%d"),
+                auto_adjust=True,
+            )
+            if not hist.empty:
+                return float(hist["Close"].iloc[-1])
+            logger.warning(
+                "No price for %s on or before %s; skipping the price sanity check",
+                ticker, trade_date,
+            )
+        except Exception as exc:
+            logger.warning("Could not fetch reference price for %s: %s", ticker, exc)
+        return 0.0
 
     def get_graph_args(self, callbacks: Optional[List] = None) -> Dict[str, Any]:
         """Get arguments for the graph invocation.
