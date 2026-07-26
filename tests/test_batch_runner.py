@@ -150,32 +150,48 @@ def test_run_batch_creates_summary(watchlist_with_two_tickers):
 
 def test_run_batch_writes_individual_reports(watchlist_with_two_tickers):
     cfg = watchlist_with_two_tickers
+    ratings = {"NVDA": "Overweight", "AAPL": "Hold"}
+
+    # Keyed on the ticker: with concurrent workers a side_effect list can pair
+    # a ticker with another ticker's state.
+    def propagate(ticker, trade_date, extra_context=""):
+        return _make_state(ticker), ratings[ticker]
+
     with patch("tradingagents.batch.runner.TradingAgentsGraph") as MockGraph:
-        MockGraph.return_value.propagate.side_effect = [
-            (_make_state("NVDA"), "Overweight"),
-            (_make_state("AAPL"), "Hold"),
-        ]
+        MockGraph.return_value.propagate.side_effect = propagate
         runner = BatchRunner(config=cfg)
         results, summary_path = runner.run_batch(trade_date="2026-05-26", narrative=False)
 
     week_dir = summary_path.parent
     assert (week_dir / "NVDA.md").exists()
     assert (week_dir / "AAPL.md").exists()
+    # Each report must hold its own ticker's analysis.
+    assert "NVDA" in (week_dir / "NVDA.md").read_text(encoding="utf-8")
+    assert {r["ticker"]: r["rating"] for r in results} == ratings
 
 
 def test_run_batch_isolates_failures(watchlist_with_two_tickers):
     cfg = watchlist_with_two_tickers
+
+    # Keyed on the ticker rather than call order: tickers run concurrently, so
+    # a side_effect list would hand the failure to whichever worker happened to
+    # call first. For the same reason the results are matched by ticker instead
+    # of by position, which follows completion order.
+    def propagate(ticker, trade_date, extra_context=""):
+        if ticker == "NVDA":
+            raise RuntimeError("API error")
+        return _make_state(ticker), "Hold"
+
     with patch("tradingagents.batch.runner.TradingAgentsGraph") as MockGraph:
-        MockGraph.return_value.propagate.side_effect = [
-            RuntimeError("API error"),
-            (_make_state("AAPL"), "Hold"),
-        ]
+        MockGraph.return_value.propagate.side_effect = propagate
         runner = BatchRunner(config=cfg)
         results, summary_path = runner.run_batch(trade_date="2026-05-26", narrative=False)
 
     assert len(results) == 2
-    assert results[0]["error"] is not None
-    assert results[1]["error"] is None
+    by_ticker = {r["ticker"]: r for r in results}
+    assert "API error" in by_ticker["NVDA"]["error"]
+    assert by_ticker["AAPL"]["error"] is None
+    assert by_ticker["AAPL"]["rating"] == "Hold"
     assert (summary_path.parent / "errors.md").exists()
 
 
