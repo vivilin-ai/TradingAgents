@@ -19,13 +19,54 @@ all three agents log the same warnings when fallback fires.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Optional, TypeVar
+from enum import Enum
+from typing import Any, Callable, Optional, TypeVar, get_args
 
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
+
+
+def build_format_instructions(schema: type[BaseModel]) -> str:
+    """Render a schema as explicit markdown formatting rules.
+
+    The schema's field descriptions *are* the output instructions when
+    structured output is active. On the free-text fallback those instructions
+    vanish, so the model returns unlabelled prose — and a decision with no
+    ``**Rating**:`` line has to be guessed at by the heuristic parser, which
+    is how a bearish write-up ends up tagged Hold. Restating the shape keeps
+    the fallback's output parseable.
+    """
+    lines = []
+    for name, field in schema.model_fields.items():
+        label = " ".join(word.capitalize() for word in name.split("_"))
+        annotation = field.annotation
+        base = annotation
+        args = [a for a in get_args(annotation) if a is not type(None)]
+        if args:
+            base = args[0]
+        if isinstance(base, type) and issubclass(base, Enum):
+            choices = " / ".join(member.value for member in base)
+            lines.append(f"**{label}**: exactly one of {choices}")
+        elif field.is_required():
+            lines.append(f"**{label}**: <your text>")
+        else:
+            lines.append(f"**{label}**: <your text, or omit this line>")
+    return (
+        "Structure your answer in markdown using exactly these labels, "
+        "each starting its own line:\n" + "\n".join(lines)
+    )
+
+
+def _append_instructions(prompt: Any, instructions: str) -> Any:
+    """Attach instructions to whatever prompt shape the caller passed."""
+    if isinstance(prompt, str):
+        return f"{prompt}\n\n{instructions}"
+    if isinstance(prompt, list):
+        return list(prompt) + [("human", instructions)]
+    return prompt
 
 
 def bind_structured(llm: Any, schema: type[T], agent_name: str) -> Optional[Any]:
@@ -51,6 +92,7 @@ def invoke_structured_or_freetext(
     prompt: Any,
     render: Callable[[T], str],
     agent_name: str,
+    schema: Optional[type[BaseModel]] = None,
 ) -> str:
     """Run the structured call and render to markdown; fall back to free-text on any failure.
 
@@ -71,5 +113,7 @@ def invoke_structured_or_freetext(
                 agent_name, exc, type(result) if 'result' in locals() else 'N/A'
             )
 
+    if schema is not None:
+        prompt = _append_instructions(prompt, build_format_instructions(schema))
     response = plain_llm.invoke(prompt)
     return response.content

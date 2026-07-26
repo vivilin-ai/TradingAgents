@@ -10,7 +10,10 @@ back gracefully to free-text generation.
 
 from __future__ import annotations
 
+import logging
+
 from tradingagents.agents.schemas import PortfolioDecision, render_pm_decision
+from tradingagents.agents.utils.rating import parse_rating_or_none
 from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
     get_language_instruction,
@@ -19,6 +22,8 @@ from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def create_portfolio_manager(llm):
@@ -69,7 +74,17 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
             prompt,
             render_pm_decision,
             "Portfolio Manager",
+            schema=PortfolioDecision,
         )
+
+        # A decision whose rating cannot be read is worse than a missing one:
+        # downstream it silently becomes Hold, contradicting its own prose.
+        if parse_rating_or_none(final_trade_decision) is None:
+            logger.warning(
+                "Portfolio Manager produced no parseable rating for %s; "
+                "downstream consumers will fall back to Hold",
+                state.get("company_of_interest", "?"),
+            )
 
         from tradingagents.agents.utils.agent_utils import verify_report_hallucination
         ref_price = state.get("reference_price", 0.0)

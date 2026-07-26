@@ -12,7 +12,7 @@ Centralising it here avoids drift between those call sites.
 from __future__ import annotations
 
 import re
-from typing import Tuple
+from typing import Optional, Tuple
 
 
 # Canonical, ordered 5-tier scale (most bullish to most bearish).
@@ -39,20 +39,92 @@ _RATING_LABEL_RE = re.compile(
     re.IGNORECASE,
 )
 
-# "持有X股" means "currently holding X shares" — not a Hold rating.
-_HOLD_AS_POSITION_RE = re.compile(r"持有\s*\d")
+# ── Fallback scanning ────────────────────────────────────────────────────────
+# Terms are located by position in the text, never by dict order: a bearish
+# sentence like "持有成本偏高，建议卖出" must resolve to Sell, and iterating a
+# mapping would have returned whichever key happened to come first.
+
+# "持有" also heads ordinary noun phrases (持有成本 / 持有者 / 持有100股) that say
+# nothing about the recommendation, so those compounds are excluded.
+_HOLD_NOT_A_RATING = r"(?!\s*\d|成本|者|人|量|比例|市值|份额|价值|期限|收益)"
+
+_ZH_TERM_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("买入", "Buy"),
+    ("增持", "Overweight"),
+    (f"持有{_HOLD_NOT_A_RATING}", "Hold"),
+    ("中性", "Hold"),
+    ("减持", "Underweight"),
+    ("卖出", "Sell"),
+    ("清仓", "Sell"),
+)
+
+_ZH_SCAN_RE = re.compile(
+    "|".join(f"(?P<zh{i}>{pat})" for i, (pat, _) in enumerate(_ZH_TERM_PATTERNS))
+)
+_ZH_GROUP_TO_RATING = {
+    f"zh{i}": rating for i, (_, rating) in enumerate(_ZH_TERM_PATTERNS)
+}
+
+_EN_SCAN_RE = re.compile(
+    r"\b(buy|overweight|hold|underweight|sell)\b", re.IGNORECASE
+)
+
+# A recommendation that is being ruled out ("不建议买入", "avoid buying") must
+# not be read as that recommendation.
+_ZH_NEGATIONS = ("不", "未", "勿", "别", "避免", "谨慎", "无需", "切忌", "切勿")
+_EN_NEGATIONS = ("not", "avoid", "no", "never", "without", "rather than", "instead of")
 
 
-def parse_rating(text: str, default: str = "Hold") -> str:
-    """Heuristically extract a 5-tier rating from prose text.
+# Negation scope ends at the clause boundary: in "不建议买入，建议卖出" the 不
+# governs 买入 only, and letting it leak forward would discard the real call.
+_CLAUSE_BREAK_RE = re.compile(r"[，。；、！？：,.;!?:\n]")
+
+
+def _is_negated(text: str, start: int) -> bool:
+    """Whether the term at ``start`` sits inside a negation in its own clause."""
+    window = text[max(0, start - 12):start]
+    window = _CLAUSE_BREAK_RE.split(window)[-1]
+    if any(neg in window for neg in _ZH_NEGATIONS):
+        return True
+    lowered = window.lower()
+    return any(neg in lowered for neg in _EN_NEGATIONS)
+
+
+def _scan_first_rating(text: str) -> Optional[str]:
+    """Earliest non-negated rating term in ``text``, or None."""
+    hits: list[tuple[int, str]] = []
+
+    for match in _ZH_SCAN_RE.finditer(text):
+        group = match.lastgroup
+        if group and not _is_negated(text, match.start()):
+            hits.append((match.start(), _ZH_GROUP_TO_RATING[group]))
+
+    for match in _EN_SCAN_RE.finditer(text):
+        if not _is_negated(text, match.start()):
+            hits.append((match.start(), match.group(1).capitalize()))
+
+    if not hits:
+        return None
+    hits.sort(key=lambda h: h[0])
+    return hits[0][1]
+
+
+def parse_rating_or_none(text: str) -> Optional[str]:
+    """Extract a 5-tier rating from prose, or None when the text carries none.
 
     Two-pass strategy:
-    1. Look for an explicit rating label (English or Chinese decision label).
-    2. Fall back to the first 5-tier rating word (English or Chinese) in the text,
-       skipping "持有X股" which means "currently holding X shares", not a Hold rating.
+    1. An explicit rating label (English or Chinese decision label) always wins;
+       structured-output agents render one, so this is the normal path.
+    2. Otherwise scan the prose and take the earliest rating term that is not
+       negated and not part of an unrelated compound.
 
-    Returns a canonical English rating string, or ``default`` if none found.
+    Returning None lets callers distinguish "the model said Hold" from "no
+    rating could be found" — conflating the two silently relabels a bearish
+    write-up as Hold.
     """
+    if not text:
+        return None
+
     # Pass 1: explicit label
     for line in text.splitlines():
         m = _RATING_LABEL_RE.search(line)
@@ -63,17 +135,11 @@ def parse_rating(text: str, default: str = "Hold") -> str:
             if word in _CHINESE_RATING_MAP:
                 return _CHINESE_RATING_MAP[word]
 
-    # Pass 2: first rating word anywhere in text
-    for line in text.splitlines():
-        for word in line.lower().split():
-            clean = word.strip("*:.,（）()【】")
-            if clean in _RATING_SET:
-                return clean.capitalize()
-        for zh_word, en_rating in _CHINESE_RATING_MAP.items():
-            if zh_word in line:
-                # Skip "持有X股" (currently holding X shares) — not a rating signal
-                if zh_word == "持有" and _HOLD_AS_POSITION_RE.search(line):
-                    continue
-                return en_rating
+    # Pass 2: earliest non-negated rating term in the prose
+    return _scan_first_rating(text)
 
-    return default
+
+def parse_rating(text: str, default: str = "Hold") -> str:
+    """Like :func:`parse_rating_or_none` but substitutes ``default`` for None."""
+    rating = parse_rating_or_none(text)
+    return rating if rating is not None else default
