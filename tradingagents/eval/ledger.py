@@ -121,6 +121,32 @@ class DecisionLedger:
         key = str(horizon)
         return [e for e in self.load_entries() if key in e.get("outcomes", {})]
 
+    def update_ratings(self, updates: dict) -> int:
+        """Rewrite the ``rating`` of existing entries.
+
+        ``updates`` maps (ticker, trade_date) -> new rating. Settled outcomes
+        are untouched: only the label changes, so a corrected rating is
+        immediately reflected in tier stats without refetching prices.
+        """
+        if not self._path or not self._path.exists() or not updates:
+            return 0
+        entries = self.load_entries()
+        changed = 0
+        for entry in entries:
+            key = (entry["ticker"], entry["trade_date"])
+            new_rating = updates.get(key)
+            if new_rating and new_rating != entry.get("rating"):
+                entry["rating"] = new_rating
+                changed += 1
+        if changed:
+            tmp = self._path.with_suffix(".tmp")
+            tmp.write_text(
+                "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries),
+                encoding="utf-8",
+            )
+            tmp.replace(self._path)
+        return changed
+
     def mark_unresolvable(self, keys: list[tuple[str, str]], reason: str) -> int:
         """Flag (ticker, trade_date) entries as permanently unsettleable."""
         if not self._path or not self._path.exists() or not keys:

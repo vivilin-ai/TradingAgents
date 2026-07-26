@@ -418,6 +418,12 @@ calibration data back into the agents. See
 # them against historical prices — no need to accumulate samples from zero.
 tradingagents evaluate --backfill
 
+# Re-derive stored ratings from the original decision text (offline, no
+# tokens). Shows a before/after diff; nothing is written without --apply.
+tradingagents recheck-ratings              # this week only
+tradingagents recheck-ratings --all        # whole history
+tradingagents recheck-ratings --apply
+
 # One-off run
 tradingagents evaluate                # settle + scorecard + calibration
 tradingagents evaluate --no-reflect   # skip LLM reflections (settlement only)

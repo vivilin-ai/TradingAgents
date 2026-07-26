@@ -1386,6 +1386,85 @@ def evaluate(
         console.print(f"\n[dim]记分卡：[/dim]{result['report_path']}")
 
 
+@app.command("recheck-ratings")
+def recheck_ratings(
+    since: Optional[str] = typer.Option(None, "--since", help="只检查该日期(YYYY-MM-DD)之后的决策"),
+    all_history: bool = typer.Option(False, "--all", help="检查全部历史决策，而非仅本周"),
+    apply: bool = typer.Option(False, "--apply", help="确认无误后写入；默认只显示对照不改数据"),
+):
+    """用当前解析器重新提取历史决策的评级，并显示与已存评级的差异。
+
+    评级是从 Portfolio Manager 的决策原文中提取的，原文完整保存在决策日志里，
+    因此可以离线重算，不需要重跑分析、不消耗任何模型额度。
+
+    默认只检查本周且只显示差异；核对无误后加 --apply 落盘。
+    """
+    from tradingagents.eval.rating_recheck import (
+        apply_rating_corrections,
+        plan_rating_corrections,
+        week_start,
+    )
+
+    config = DEFAULT_CONFIG.copy()
+    scope_since = None if all_history else (since or week_start())
+    scope_label = "全部历史" if all_history else f"{scope_since} 起"
+
+    corrections = plan_rating_corrections(config, since=scope_since)
+    changed = [c for c in corrections if c["new"]]
+    unparseable = [c for c in corrections if not c["new"]]
+
+    console.print(f"\n[bold]评级复核范围：[/bold]{scope_label}")
+
+    if not corrections:
+        console.print("[green]✓ 所有决策的评级与原文一致，无需校正。[/green]")
+        return
+
+    if changed:
+        table = Table(box=box.SIMPLE_HEAD, show_header=True, header_style="bold magenta")
+        table.add_column("日期", style="cyan")
+        table.add_column("标的", style="cyan bold")
+        table.add_column("决策日志", style="yellow")
+        table.add_column("结算台账", style="yellow")
+        table.add_column("按原文重算", style="green bold")
+        for c in changed:
+            table.add_row(
+                c["date"], c["ticker"], c["old"],
+                c.get("old_ledger") or "—", c["new"],
+            )
+        console.print(table)
+        console.print(f"[bold]{len(changed)}[/bold] 条评级与原文不符")
+
+    if unparseable:
+        console.print(
+            f"\n[yellow]另有 {len(unparseable)} 条决策原文中找不到明确评级，"
+            "保持原样不改动：[/yellow]"
+        )
+        for c in unparseable:
+            console.print(f"  {c['date']} {c['ticker']}（当前记为 {c['old']}）")
+
+    if not apply:
+        console.print(
+            "\n[dim]以上为预览，未修改任何数据。确认无误后执行：[/dim]"
+            f"\n  [bold]tradingagents recheck-ratings"
+            f"{' --all' if all_history else ''}"
+            f"{f' --since {since}' if since else ''} --apply[/bold]"
+        )
+        return
+
+    if not changed:
+        console.print("\n[green]没有需要写入的改动。[/green]")
+        return
+
+    counts = apply_rating_corrections(config, corrections)
+    console.print(
+        f"\n[green]✓ 已校正[/green] 决策日志 {counts['memory_log']} 条、"
+        f"结算台账 {counts['ledger']} 条"
+    )
+    console.print(
+        "[dim]重新生成记分卡以反映校正后的评级：[/dim]tradingagents evaluate"
+    )
+
+
 @app.command("scheduled-run")
 def scheduled_run(
     task_name: str = typer.Argument(..., help="Scheduled task name from scheduled_tasks.yaml"),

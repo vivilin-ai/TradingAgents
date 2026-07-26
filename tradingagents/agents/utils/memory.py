@@ -216,6 +216,51 @@ class TradingMemoryLog:
         tmp_path.write_text(new_text, encoding="utf-8")
         tmp_path.replace(self._log_path)
 
+    def update_ratings(self, updates: dict) -> int:
+        """Rewrite the rating field of existing tag lines.
+
+        ``updates`` maps (ticker, date) -> new rating. Only the rating field
+        changes; return figures, holding period and the pending marker are
+        preserved, as is the decision text itself. Used when a parser fix
+        means a stored decision should have been tagged differently.
+        """
+        if not self._log_path or not self._log_path.exists() or not updates:
+            return 0
+
+        blocks = self._log_path.read_text(encoding="utf-8").split(self._SEPARATOR)
+        changed = 0
+        new_blocks = []
+        for block in blocks:
+            stripped = block.strip()
+            if not stripped:
+                new_blocks.append(block)
+                continue
+            lines = stripped.splitlines()
+            tag_line = lines[0].strip()
+            if not (tag_line.startswith("[") and tag_line.endswith("]")):
+                new_blocks.append(block)
+                continue
+            fields = [f.strip() for f in tag_line[1:-1].split("|")]
+            if len(fields) < 4:
+                new_blocks.append(block)
+                continue
+            key = (fields[1], fields[0])
+            new_rating = updates.get(key)
+            if new_rating is None or new_rating == fields[2]:
+                new_blocks.append(block)
+                continue
+            fields[2] = new_rating
+            rest = "\n".join(lines[1:]).lstrip()
+            new_blocks.append(f"[{' | '.join(fields)}]\n\n{rest}")
+            changed += 1
+
+        if changed:
+            new_text = self._SEPARATOR.join(new_blocks)
+            tmp_path = self._log_path.with_suffix(".tmp")
+            tmp_path.write_text(new_text, encoding="utf-8")
+            tmp_path.replace(self._log_path)
+        return changed
+
     # --- Helpers ---
 
     def _apply_rotation(self, blocks: List[str]) -> List[str]:
