@@ -1391,6 +1391,11 @@ def recheck_ratings(
     since: Optional[str] = typer.Option(None, "--since", help="只检查该日期(YYYY-MM-DD)之后的决策"),
     all_history: bool = typer.Option(False, "--all", help="检查全部历史决策，而非仅本周"),
     apply: bool = typer.Option(False, "--apply", help="确认无误后写入；默认只显示对照不改数据"),
+    include_uncertain: bool = typer.Option(
+        False, "--include-uncertain",
+        help="连同没有明确评级行、仅靠散文推断的条目一起写入（请先核对原文）",
+    ),
+    show_text: bool = typer.Option(False, "--show-text", help="打印每条决策的完整原文以便核对"),
 ):
     """用当前解析器重新提取历史决策的评级，并显示与已存评级的差异。
 
@@ -1401,6 +1406,7 @@ def recheck_ratings(
     """
     from tradingagents.eval.rating_recheck import (
         apply_rating_corrections,
+        is_confident,
         plan_rating_corrections,
         week_start,
     )
@@ -1410,7 +1416,8 @@ def recheck_ratings(
     scope_label = "全部历史" if all_history else f"{scope_since} 起"
 
     corrections = plan_rating_corrections(config, since=scope_since)
-    changed = [c for c in corrections if c["new"]]
+    confident = [c for c in corrections if is_confident(c)]
+    uncertain = [c for c in corrections if c["new"] and not is_confident(c)]
     unparseable = [c for c in corrections if not c["new"]]
 
     console.print(f"\n[bold]评级复核范围：[/bold]{scope_label}")
@@ -1419,47 +1426,87 @@ def recheck_ratings(
         console.print("[green]✓ 所有决策的评级与原文一致，无需校正。[/green]")
         return
 
-    if changed:
-        table = Table(box=box.SIMPLE_HEAD, show_header=True, header_style="bold magenta")
-        table.add_column("日期", style="cyan")
-        table.add_column("标的", style="cyan bold")
-        table.add_column("决策日志", style="yellow")
-        table.add_column("结算台账", style="yellow")
-        table.add_column("按原文重算", style="green bold")
-        for c in changed:
-            table.add_row(
-                c["date"], c["ticker"], c["old"],
-                c.get("old_ledger") or "—", c["new"],
+    _METHOD_LABEL = {
+        "label": "原文有明确评级行",
+        "conclusion": "取自结论句（推断）",
+        "prose": "全文首个评级词（推断，可靠性低）",
+    }
+
+    def _show(items: list[dict], title: str, style: str) -> None:
+        console.print(f"\n[{style}]{title}[/{style}]")
+        for c in items:
+            console.print(
+                f"\n  [cyan]{c['date']} {c['ticker']}[/cyan]："
+                f"决策日志 [yellow]{c['old']}[/yellow] · "
+                f"台账 [yellow]{c.get('old_ledger') or '—'}[/yellow] → "
+                f"[bold green]{c['new']}[/bold green]",
+                markup=True,
             )
-        console.print(table)
-        console.print(f"[bold]{len(changed)}[/bold] 条评级与原文不符")
+            console.print(f"    依据：{_METHOD_LABEL.get(c['method'], c['method'])}")
+            if c.get("snippet"):
+                console.print(f"    原文片段：{c['snippet']}", markup=False, highlight=False)
+            if c.get("report"):
+                console.print(f"    完整报告：{c['report']}", markup=False)
+            if show_text:
+                console.print("    ── 决策原文 ──", markup=False)
+                for line in c["decision"].splitlines():
+                    console.print(f"    {line}", markup=False, highlight=False)
+
+    if confident:
+        _show(confident, f"以下 {len(confident)} 条原文写明了评级，属确定性修正：", "bold green")
+
+    if uncertain:
+        _show(
+            uncertain,
+            f"以下 {len(uncertain)} 条原文没有明确评级行，新旧结果都是推断 —— "
+            "请核对原文后再决定：",
+            "bold yellow",
+        )
 
     if unparseable:
         console.print(
-            f"\n[yellow]另有 {len(unparseable)} 条决策原文中找不到明确评级，"
-            "保持原样不改动：[/yellow]"
+            f"\n[yellow]另有 {len(unparseable)} 条原文中完全找不到评级，"
+            "不做任何改动：[/yellow]"
         )
         for c in unparseable:
-            console.print(f"  {c['date']} {c['ticker']}（当前记为 {c['old']}）")
+            console.print(f"  {c['date']} {c['ticker']}（当前记为 {c['old']}）"
+                          + (f" · 报告：{c['report']}" if c.get("report") else ""),
+                          markup=False)
 
     if not apply:
-        console.print(
-            "\n[dim]以上为预览，未修改任何数据。确认无误后执行：[/dim]"
-            f"\n  [bold]tradingagents recheck-ratings"
-            f"{' --all' if all_history else ''}"
-            f"{f' --since {since}' if since else ''} --apply[/bold]"
-        )
+        base = "tradingagents recheck-ratings"
+        if all_history:
+            base += " --all"
+        if since:
+            base += f" --since {since}"
+        console.print("\n[dim]以上为预览，未修改任何数据。[/dim]")
+        if confident:
+            console.print(f"  写入确定性修正：[bold]{base} --apply[/bold]")
+        if uncertain:
+            console.print(
+                f"  核对原文（打印全文）：[bold]{base} --show-text[/bold]\n"
+                f"  确认后连推断项一并写入：[bold]{base} --apply --include-uncertain[/bold]"
+            )
         return
 
-    if not changed:
+    counts = apply_rating_corrections(
+        config, corrections, include_uncertain=include_uncertain
+    )
+    if not counts["memory_log"] and not counts["ledger"]:
         console.print("\n[green]没有需要写入的改动。[/green]")
+        if uncertain and not include_uncertain:
+            console.print(
+                f"[dim]{len(uncertain)} 条推断项已跳过；确认原文后加 "
+                "--include-uncertain 才会写入。[/dim]"
+            )
         return
 
-    counts = apply_rating_corrections(config, corrections)
     console.print(
         f"\n[green]✓ 已校正[/green] 决策日志 {counts['memory_log']} 条、"
         f"结算台账 {counts['ledger']} 条"
     )
+    if counts["skipped"]:
+        console.print(f"[dim]跳过 {counts['skipped']} 条（推断项或无评级项）[/dim]")
     console.print(
         "[dim]重新生成记分卡以反映校正后的评级：[/dim]tradingagents evaluate"
     )

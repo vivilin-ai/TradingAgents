@@ -17,12 +17,32 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
+from pathlib import Path
+
 from tradingagents.agents.utils.memory import TradingMemoryLog
-from tradingagents.agents.utils.rating import parse_rating_or_none
+from tradingagents.agents.utils.rating import analyze_rating
 
 from .ledger import DecisionLedger
 
 logger = logging.getLogger(__name__)
+
+
+def find_report(config: dict, ticker: str, date: str) -> Optional[str]:
+    """Locate the saved report for a decision so the original can be read."""
+    root = config.get("reports_root")
+    if not root:
+        return None
+    base = Path(root).expanduser()
+    if not base.exists():
+        return None
+    for pattern in (
+        f"*/{date}/{ticker}.md",
+        f"*/*/{date}/{ticker}.md",
+        f"manual/{date}_{ticker}/*.md",
+    ):
+        for match in sorted(base.glob(pattern)):
+            return str(match)
+    return None
 
 
 def plan_rating_corrections(
@@ -56,36 +76,56 @@ def plan_rating_corrections(
         key = (entry["ticker"], entry["date"])
         logged = entry["rating"]
         in_ledger = ledger_ratings.get(key)
-        reparsed = parse_rating_or_none(decision)
+        evidence = analyze_rating(decision)
 
-        if reparsed is None:
+        disagrees = evidence.rating is not None and (
+            evidence.rating != logged
+            or (in_ledger is not None and evidence.rating != in_ledger)
+        )
+        if evidence.rating is None or disagrees:
             corrections.append({
                 "ticker": entry["ticker"], "date": entry["date"],
                 "old": logged, "old_ledger": in_ledger,
-                "new": None, "unparseable": True,
-            })
-        elif reparsed != logged or (in_ledger is not None and reparsed != in_ledger):
-            corrections.append({
-                "ticker": entry["ticker"], "date": entry["date"],
-                "old": logged, "old_ledger": in_ledger,
-                "new": reparsed, "unparseable": False,
+                "new": evidence.rating,
+                "unparseable": evidence.rating is None,
+                # method/snippet let the user judge the change instead of
+                # trusting a heuristic they cannot see the input for.
+                "method": evidence.method,
+                "snippet": evidence.snippet,
+                "authoritative": evidence.is_authoritative,
+                "report": find_report(config, entry["ticker"], entry["date"]),
+                "decision": decision,
             })
     corrections.sort(key=lambda c: (c["date"], c["ticker"]))
     return corrections
 
 
+def is_confident(correction: dict[str, Any]) -> bool:
+    """Whether a correction rests on an explicit rating label in the text.
+
+    Only ``method == "label"`` is authoritative: the stored rating simply
+    failed to read a label that was there. Everything else is one heuristic
+    disagreeing with another, which is not grounds for silently rewriting
+    recorded history.
+    """
+    return bool(correction.get("new")) and correction.get("method") == "label"
+
+
 def apply_rating_corrections(
-    config: dict, corrections: list[dict[str, Any]]
+    config: dict,
+    corrections: list[dict[str, Any]],
+    include_uncertain: bool = False,
 ) -> dict[str, int]:
     """Write the actionable corrections to both stores.
 
-    Returns counts for the markdown log and the JSONL ledger. Entries whose
-    text yields no rating are skipped.
+    By default only label-backed corrections are written. Prose-based ones
+    require ``include_uncertain`` — they replace one guess with another, so the
+    user has to opt in after reviewing the evidence.
     """
     actionable = {
         (c["ticker"], c["date"]): c["new"]
         for c in corrections
-        if c.get("new")
+        if c.get("new") and (include_uncertain or is_confident(c))
     }
     if not actionable:
         return {"memory_log": 0, "ledger": 0, "skipped": len(corrections)}

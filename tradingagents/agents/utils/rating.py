@@ -12,7 +12,7 @@ Centralising it here avoids drift between those call sites.
 from __future__ import annotations
 
 import re
-from typing import Optional, Tuple
+from typing import NamedTuple, Optional, Tuple
 
 
 # Canonical, ordered 5-tier scale (most bullish to most bearish).
@@ -90,8 +90,63 @@ def _is_negated(text: str, start: int) -> bool:
     return any(neg in lowered for neg in _EN_NEGATIONS)
 
 
-def _scan_first_rating(text: str) -> Optional[str]:
-    """Earliest non-negated rating term in ``text``, or None."""
+# Phrases that introduce the verdict. A long write-up often quotes an earlier
+# call before revising it ("上周给出卖出评级 … 本次上调至增持"), so the earliest
+# term in the text is not the conclusion; a term in a concluding clause is.
+_CONCLUSION_MARKERS = (
+    "综上", "综合", "因此", "所以", "结论", "最终", "建议", "总结", "评级",
+    "维持", "上调", "下调", "给予", "给出", "决策", "调整为", "我们认为",
+    "therefore", "conclusion", "recommend", "maintain", "overall",
+    "in sum", "we rate", "downgrade", "upgrade", "verdict",
+)
+
+
+def _clause_spans(text: str) -> list[tuple[int, int]]:
+    spans, start = [], 0
+    for match in _CLAUSE_BREAK_RE.finditer(text):
+        spans.append((start, match.start()))
+        start = match.end()
+    spans.append((start, len(text)))
+    return spans
+
+
+def _clause_index(pos: int, spans: list[tuple[int, int]]) -> int:
+    for i, (start, end) in enumerate(spans):
+        if start <= pos <= end:
+            return i
+    return len(spans) - 1
+
+
+def _has_marker(text: str, span: tuple[int, int]) -> bool:
+    window = text[span[0]:span[1]].lower()
+    return any(marker in window for marker in _CONCLUSION_MARKERS)
+
+
+def _in_conclusion_context(
+    text: str, pos: int, spans: list[tuple[int, int]], hit_clauses: set[int]
+) -> bool:
+    """Whether the term at ``pos`` sits in (or right after) a concluding clause.
+
+    A marker in the preceding clause carries over ("综合以上因素，增持"), but only
+    when that clause states no rating of its own — otherwise "维持持有评级，等待
+    卖出时机" would lend 维持 to 卖出 and invert the verdict.
+    """
+    i = _clause_index(pos, spans)
+    if _has_marker(text, spans[i]):
+        return True
+    if i and (i - 1) not in hit_clauses:
+        return _has_marker(text, spans[i - 1])
+    return False
+
+
+def _scan_prose_rating(text: str) -> tuple[Optional[str], str, int]:
+    """Best-effort rating from prose.
+
+    Returns (rating, method, position). ``method`` is ``"conclusion"`` when the
+    term was found in a concluding clause — the last one wins, since a revised
+    call comes after the one it replaces — or ``"prose"`` for the weaker
+    earliest-term guess, which callers should treat as low confidence.
+    """
     hits: list[tuple[int, str]] = []
 
     for match in _ZH_SCAN_RE.finditer(text):
@@ -104,39 +159,82 @@ def _scan_first_rating(text: str) -> Optional[str]:
             hits.append((match.start(), match.group(1).capitalize()))
 
     if not hits:
-        return None
+        return None, "none", -1
     hits.sort(key=lambda h: h[0])
-    return hits[0][1]
+
+    spans = _clause_spans(text)
+    hit_clauses = {_clause_index(pos, spans) for pos, _ in hits}
+    concluding = [
+        h for h in hits if _in_conclusion_context(text, h[0], spans, hit_clauses)
+    ]
+    if concluding:
+        pos, rating = concluding[-1]
+        return rating, "conclusion", pos
+    pos, rating = hits[0]
+    return rating, "prose", pos
+
+
+class RatingEvidence(NamedTuple):
+    """A rating plus how it was determined, so callers can judge confidence.
+
+    ``method``:
+      ``"label"``      — an explicit rating label; authoritative.
+      ``"conclusion"`` — a term in a concluding clause; usually right.
+      ``"prose"``      — earliest term anywhere; a guess, treat with suspicion.
+      ``"none"``       — the text states no rating.
+    """
+
+    rating: Optional[str]
+    method: str
+    snippet: str
+
+    @property
+    def is_authoritative(self) -> bool:
+        return self.method == "label"
+
+
+def _snippet(text: str, pos: int, width: int = 40) -> str:
+    if pos < 0:
+        return ""
+    start, end = max(0, pos - width), min(len(text), pos + width)
+    return ("…" if start else "") + text[start:end].replace("\n", " ") + ("…" if end < len(text) else "")
+
+
+def analyze_rating(text: str) -> RatingEvidence:
+    """Extract a rating and report how it was found.
+
+    1. An explicit rating label always wins; structured-output agents render
+       one, so this is the normal path and the only authoritative one.
+    2. Otherwise fall back to scanning the prose, preferring a term in a
+       concluding clause over the earliest term in the document.
+    """
+    if not text:
+        return RatingEvidence(None, "none", "")
+
+    for line in text.splitlines():
+        m = _RATING_LABEL_RE.search(line)
+        if m:
+            word = m.group(1)
+            rating = None
+            if word.lower() in _RATING_SET:
+                rating = word.capitalize()
+            elif word in _CHINESE_RATING_MAP:
+                rating = _CHINESE_RATING_MAP[word]
+            if rating:
+                return RatingEvidence(rating, "label", line.strip()[:120])
+
+    rating, method, pos = _scan_prose_rating(text)
+    return RatingEvidence(rating, method, _snippet(text, pos))
 
 
 def parse_rating_or_none(text: str) -> Optional[str]:
     """Extract a 5-tier rating from prose, or None when the text carries none.
 
-    Two-pass strategy:
-    1. An explicit rating label (English or Chinese decision label) always wins;
-       structured-output agents render one, so this is the normal path.
-    2. Otherwise scan the prose and take the earliest rating term that is not
-       negated and not part of an unrelated compound.
-
     Returning None lets callers distinguish "the model said Hold" from "no
     rating could be found" — conflating the two silently relabels a bearish
     write-up as Hold.
     """
-    if not text:
-        return None
-
-    # Pass 1: explicit label
-    for line in text.splitlines():
-        m = _RATING_LABEL_RE.search(line)
-        if m:
-            word = m.group(1)
-            if word.lower() in _RATING_SET:
-                return word.capitalize()
-            if word in _CHINESE_RATING_MAP:
-                return _CHINESE_RATING_MAP[word]
-
-    # Pass 2: earliest non-negated rating term in the prose
-    return _scan_first_rating(text)
+    return analyze_rating(text).rating
 
 
 def parse_rating(text: str, default: str = "Hold") -> str:

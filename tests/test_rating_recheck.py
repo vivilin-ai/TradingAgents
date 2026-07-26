@@ -10,6 +10,7 @@ from tradingagents.agents.utils.memory import TradingMemoryLog
 from tradingagents.eval.ledger import DecisionLedger
 from tradingagents.eval.rating_recheck import (
     apply_rating_corrections,
+    is_confident,
     plan_rating_corrections,
     week_start,
 )
@@ -113,7 +114,10 @@ def test_apply_updates_both_stores_and_preserves_outcomes(config):
             row("NVDA", "2026-07-24", "Buy"),
         ],
     )
-    counts = apply_rating_corrections(config, plan_rating_corrections(config))
+    # BEARISH carries no explicit rating line, so this is an opt-in correction.
+    counts = apply_rating_corrections(
+        config, plan_rating_corrections(config), include_uncertain=True
+    )
     assert counts["memory_log"] == 1 and counts["ledger"] == 1
 
     entries = {e["ticker"]: e for e in TradingMemoryLog(config).load_entries()}
@@ -133,15 +137,76 @@ def test_apply_updates_both_stores_and_preserves_outcomes(config):
     assert led["NVDA"]["rating"] == "Buy"
 
 
+def test_uncertain_corrections_carry_evidence_and_are_not_auto_applied(config):
+    """Prose-based corrections replace one guess with another, so they must be
+    shown with their evidence and left alone until the user opts in."""
+    seed(
+        config,
+        [f"[2026-07-24 | ALAB | Overweight | pending]\n\nDECISION:\n{BEARISH}"],
+        [row("ALAB", "2026-07-24", "Overweight")],
+    )
+    corrections = plan_rating_corrections(config)
+    c = corrections[0]
+    assert c["new"] == "Sell"
+    assert c["method"] == "conclusion"
+    assert c["authoritative"] is False
+    assert is_confident(c) is False
+    assert "建议卖出" in c["snippet"]
+
+    # Default apply leaves it untouched.
+    counts = apply_rating_corrections(config, corrections)
+    assert counts["memory_log"] == 0 and counts["skipped"] == 1
+    assert TradingMemoryLog(config).load_entries()[0]["rating"] == "Overweight"
+
+    # Opting in writes it.
+    counts = apply_rating_corrections(config, corrections, include_uncertain=True)
+    assert counts["memory_log"] == 1 and counts["ledger"] == 1
+    assert TradingMemoryLog(config).load_entries()[0]["rating"] == "Sell"
+
+
+def test_label_backed_correction_is_confident_and_auto_applied(config):
+    seed(
+        config,
+        [f"[2026-07-24 | COHR | Buy | pending]\n\nDECISION:\n"
+         f"**Rating**: Overweight\n\n光模块需求强劲，逐步增持。"],
+        [row("COHR", "2026-07-24", "Buy")],
+    )
+    corrections = plan_rating_corrections(config)
+    assert is_confident(corrections[0]) is True
+    assert corrections[0]["method"] == "label"
+
+    counts = apply_rating_corrections(config, corrections)
+    assert counts["memory_log"] == 1
+    assert TradingMemoryLog(config).load_entries()[0]["rating"] == "Overweight"
+
+
+def test_correction_links_the_saved_report(config, tmp_path):
+    report_dir = tmp_path / "reports" / "scheduled" / "weekly" / "2026-07-24"
+    report_dir.mkdir(parents=True)
+    (report_dir / "ALAB.md").write_text("# ALAB", encoding="utf-8")
+    config["reports_root"] = str(tmp_path / "reports")
+
+    seed(
+        config,
+        [f"[2026-07-24 | ALAB | Overweight | pending]\n\nDECISION:\n{BEARISH}"],
+        [row("ALAB", "2026-07-24", "Overweight")],
+    )
+    assert plan_rating_corrections(config)[0]["report"].endswith("ALAB.md")
+
+
 def test_apply_is_idempotent(config):
     seed(
         config,
         [f"[2026-07-24 | 0100.HK | Hold | pending]\n\nDECISION:\n{BEARISH}"],
         [row("0100.HK", "2026-07-24", "Hold")],
     )
-    apply_rating_corrections(config, plan_rating_corrections(config))
+    apply_rating_corrections(
+        config, plan_rating_corrections(config), include_uncertain=True
+    )
     assert plan_rating_corrections(config) == []
-    counts = apply_rating_corrections(config, plan_rating_corrections(config))
+    counts = apply_rating_corrections(
+        config, plan_rating_corrections(config), include_uncertain=True
+    )
     assert counts["memory_log"] == 0 and counts["ledger"] == 0
 
 

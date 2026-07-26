@@ -419,10 +419,13 @@ calibration data back into the agents. See
 tradingagents evaluate --backfill
 
 # Re-derive stored ratings from the original decision text (offline, no
-# tokens). Shows a before/after diff; nothing is written without --apply.
+# tokens). Shows each proposed change with the evidence behind it; nothing is
+# written without --apply.
 tradingagents recheck-ratings              # this week only
 tradingagents recheck-ratings --all        # whole history
-tradingagents recheck-ratings --apply
+tradingagents recheck-ratings --show-text  # print the full decision text
+tradingagents recheck-ratings --apply      # write label-backed changes only
+tradingagents recheck-ratings --apply --include-uncertain   # also inferred ones
 
 # One-off run
 tradingagents evaluate                # settle + scorecard + calibration
