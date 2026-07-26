@@ -20,6 +20,7 @@ from tradingagents.agents.utils.agent_utils import (
 )
 from tradingagents.agents.utils.structured import (
     bind_structured,
+    ensure_rating_line,
     invoke_structured_or_freetext,
 )
 
@@ -77,8 +78,12 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
             schema=PortfolioDecision,
         )
 
-        # A decision whose rating cannot be read is worse than a missing one:
-        # downstream it silently becomes Hold, contradicting its own prose.
+        # Every stored decision must carry an explicit rating: an inferred one
+        # can contradict the reasoning it was read from, and it silently
+        # becomes Hold when nothing parses.
+        final_trade_decision = ensure_rating_line(
+            final_trade_decision, llm, "Portfolio Manager"
+        )
         if parse_rating_or_none(final_trade_decision) is None:
             logger.warning(
                 "Portfolio Manager produced no parseable rating for %s; "

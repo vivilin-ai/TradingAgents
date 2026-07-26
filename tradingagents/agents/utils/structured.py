@@ -60,6 +60,81 @@ def build_format_instructions(schema: type[BaseModel]) -> str:
     )
 
 
+def build_json_instructions(schema: type[BaseModel]) -> str:
+    """Render a schema as a JSON contract for providers limited to JSON mode.
+
+    ``method="json_mode"`` only sets ``response_format={"type":"json_object"}``;
+    unlike tool calling it does not transmit the schema, so the shape has to be
+    stated in the prompt or the model returns prose and parsing fails.
+    """
+    fields = []
+    for name, field in schema.model_fields.items():
+        annotation = field.annotation
+        base = annotation
+        args = [a for a in get_args(annotation) if a is not type(None)]
+        if args:
+            base = args[0]
+        if isinstance(base, type) and issubclass(base, Enum):
+            allowed = ", ".join(f'"{m.value}"' for m in base)
+            fields.append(f'  "{name}": one of {allowed}')
+        elif base is float or base is int:
+            fields.append(f'  "{name}": number{"" if field.is_required() else " or null"}')
+        else:
+            fields.append(f'  "{name}": string{"" if field.is_required() else " or null"}')
+    return (
+        "Reply with a single JSON object and nothing else — no prose, no code "
+        "fences. It must have exactly these keys:\n{\n"
+        + ",\n".join(fields)
+        + "\n}"
+    )
+
+
+def ensure_rating_line(text: str, llm: Any, agent_name: str) -> str:
+    """Guarantee the decision text opens with an explicit ``**Rating**:`` line.
+
+    Free-text output has no enforced shape, so the rating had to be inferred
+    from prose — and an inferred rating can contradict the reasoning it was
+    read from. Rather than guess, ask the model to name the rating it just
+    argued for and record that answer explicitly, so every stored decision
+    carries an authoritative label.
+
+    Returns ``text`` unchanged when it already carries a label, or when the
+    repair call fails (the caller logs and the heuristic still applies).
+    """
+    from tradingagents.agents.utils.rating import RATINGS_5_TIER, analyze_rating
+
+    if not text or not text.strip():
+        return text
+    if analyze_rating(text).method == "label":
+        return text
+
+    choices = " / ".join(RATINGS_5_TIER)
+    ask = (
+        "Below is a trading decision write-up. Reply with exactly one word — "
+        f"the rating it argues for, chosen from: {choices}. "
+        "No punctuation, no explanation.\n\n" + text
+    )
+    try:
+        answer = llm.invoke(ask).content or ""
+    except Exception as exc:
+        logger.warning("%s: rating repair call failed (%s)", agent_name, exc)
+        return text
+
+    word = answer.strip().strip("*.:：，,。").split()[:1]
+    canonical = {r.lower(): r for r in RATINGS_5_TIER}
+    rating = canonical.get(word[0].lower()) if word else None
+    if rating is None:
+        logger.warning(
+            "%s: rating repair returned %r, which is not a 5-tier rating",
+            agent_name, answer[:80],
+        )
+        return text
+
+    logger.info("%s: recovered explicit rating %s for an unlabelled decision",
+                agent_name, rating)
+    return f"**Rating**: {rating}\n\n{text}"
+
+
 def _append_instructions(prompt: Any, instructions: str) -> Any:
     """Attach instructions to whatever prompt shape the caller passed."""
     if isinstance(prompt, str):

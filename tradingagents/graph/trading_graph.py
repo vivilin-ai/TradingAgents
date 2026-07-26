@@ -138,6 +138,12 @@ class TradingAgentsGraph:
         kwargs = {}
         provider = self.config.get("llm_provider", "").lower()
 
+        # Deterministic sampling: two runs of the same ticker and date must not
+        # disagree. Clients drop it for models that reject the parameter.
+        temperature = self.config.get("llm_temperature")
+        if temperature is not None:
+            kwargs["temperature"] = float(temperature)
+
         if provider == "google":
             thinking_level = self.config.get("google_thinking_level")
             if thinking_level:
@@ -346,6 +352,17 @@ class TradingAgentsGraph:
             final_state = trace[-1]
         else:
             final_state = self.graph.invoke(init_agent_state, **args)
+
+        # A blank decision means the Portfolio Manager exhausted its retries.
+        # Reporting it as a failed run is the honest outcome; recording it
+        # would enter a Hold that no analysis ever argued for.
+        decision = final_state.get("final_trade_decision") or ""
+        if not decision.strip():
+            raise RuntimeError(
+                f"Portfolio Manager produced no decision for {company_name} "
+                f"on {trade_date} after {final_state.get('retry_count', 0)} "
+                "attempts (output failed validation each time)"
+            )
 
         # Store current state for reflection.
         self.curr_state = final_state

@@ -1,10 +1,13 @@
 """Append-only markdown decision log for TradingAgents."""
 
+import logging
 from typing import List, Optional
 from pathlib import Path
 import re
 
 from tradingagents.agents.utils.rating import parse_rating
+
+logger = logging.getLogger(__name__)
 
 
 class TradingMemoryLog:
@@ -36,6 +39,14 @@ class TradingMemoryLog:
     ) -> None:
         """Append pending entry at end of propagate(). No LLM call."""
         if not self._log_path:
+            return
+        # An empty decision means the run failed to produce one. Storing it
+        # would tag a rating-less entry as Hold and feed a call that was never
+        # made into the tier statistics.
+        if not final_trade_decision or not final_trade_decision.strip():
+            logger.warning(
+                "Refusing to store an empty decision for %s on %s", ticker, trade_date
+            )
             return
         # Idempotency guard: fast raw-text scan instead of full parse
         if self._log_path.exists():

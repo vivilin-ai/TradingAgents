@@ -31,7 +31,7 @@ class NormalizedChatOpenAI(ChatOpenAI):
         return _invoke_with_retry()
 
     def with_structured_output(self, schema, *, method=None, **kwargs):
-        """Wrap with structured output, defaulting to function_calling for OpenAI.
+        """Wrap with structured output, choosing a method the model supports.
 
         langchain-openai's Responses-API-parse path (the default for json_schema
         when use_responses_api=True) calls response.model_dump(...) on the OpenAI
@@ -41,24 +41,55 @@ class NormalizedChatOpenAI(ChatOpenAI):
         serialization, so it is the cleaner choice for our combination of
         use_responses_api=True + with_structured_output. Both paths use OpenAI's
         strict mode and produce the same typed Pydantic instance.
+
+        Reasoning models generally reject ``tool_choice="required"``, so they
+        get JSON mode instead of losing structured output altogether: dropping
+        to free text means the rating has to be guessed from prose, which is
+        exactly how a decision ends up labelled against its own reasoning.
         """
         model_name = getattr(self, "model_name", "") or getattr(self, "model", "")
         model_lower = model_name.lower()
-        
-        # Reasoning models generally reject tool_choice="required" or function calling.
-        # By raising NotImplementedError here, we fail fast and cleanly fall back
-        # to free-text generation, avoiding a 400 Bad Request error and wasted latency.
-        unsupported_models = ["reasoner", "r1", "thinking", "deepseek-v4-pro"]
-        if any(kw in model_lower for kw in unsupported_models):
-            raise NotImplementedError(f"Reasoning model {model_name} does not support structured output tools.")
 
         if method is None:
-            method = "function_calling"
-        return super().with_structured_output(schema, method=method, **kwargs)
+            if any(kw in model_lower for kw in _NO_TOOL_CALLING_MODELS):
+                method = "json_mode"
+            else:
+                method = "function_calling"
+
+        runnable = super().with_structured_output(schema, method=method, **kwargs)
+        if method == "json_mode":
+            # JSON mode transmits no schema, so the shape goes in the prompt.
+            return _JsonModeStructured(runnable, schema)
+        return runnable
+
+
+# Models that reject tool_choice="required"; they use JSON mode instead.
+_NO_TOOL_CALLING_MODELS = ("reasoner", "r1", "thinking", "deepseek-v4-pro")
+
+# Models that reject an explicit temperature (reasoning families fix it at 1).
+_NO_TEMPERATURE_MODELS = ("o1", "o3", "o4-mini", "gpt-5", "reasoner", "r1", "thinking")
+
+
+class _JsonModeStructured:
+    """Adds the JSON contract to the prompt before a json_mode invocation."""
+
+    def __init__(self, runnable: Any, schema: Any):
+        self._runnable = runnable
+        self._schema = schema
+
+    def invoke(self, prompt: Any, *args: Any, **kwargs: Any) -> Any:
+        from tradingagents.agents.utils.structured import build_json_instructions
+
+        hint = build_json_instructions(self._schema)
+        if isinstance(prompt, str):
+            prompt = f"{prompt}\n\n{hint}"
+        elif isinstance(prompt, list):
+            prompt = list(prompt) + [("human", hint)]
+        return self._runnable.invoke(prompt, *args, **kwargs)
 
 # Kwargs forwarded from user config to ChatOpenAI
 _PASSTHROUGH_KWARGS = (
-    "timeout", "max_retries", "reasoning_effort",
+    "timeout", "max_retries", "reasoning_effort", "temperature",
     "api_key", "callbacks", "http_client", "http_async_client",
 )
 
@@ -131,6 +162,15 @@ class OpenAIClient(BaseLLMClient):
         # Ensure max_retries is at least 3
         if "max_retries" not in llm_kwargs:
             llm_kwargs["max_retries"] = 3
+
+        # Without an explicit temperature the provider default (typically 1.0)
+        # applies, so the same ticker on the same day yields a different
+        # decision on every run. Reasoning families fix temperature at 1 and
+        # reject the parameter, so it is omitted for those.
+        if "temperature" in llm_kwargs and any(
+            kw in self.model.lower() for kw in _NO_TEMPERATURE_MODELS
+        ):
+            llm_kwargs.pop("temperature")
 
         # Native OpenAI: use Responses API for consistent behavior across
         # all model families. Third-party providers use Chat Completions.

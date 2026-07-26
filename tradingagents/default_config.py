@@ -18,6 +18,12 @@ DEFAULT_CONFIG = {
     # When None each provider client falls back to its own default endpoint.
     "backend_url": None,
 
+    # Sampling temperature for every agent call. 0 keeps a re-run of the same
+    # ticker and date reproducible; without it the provider default (typically
+    # 1.0) makes each run return a different decision. Ignored by reasoning
+    # models, which fix temperature internally.
+    "llm_temperature": float(os.getenv("TRADINGAGENTS_LLM_TEMPERATURE", "0")),
+
     # Provider-specific thinking configuration
     "google_thinking_level": None,      # "high", "minimal", etc.
     "openai_reasoning_effort": None,    # "medium", "high", "low"

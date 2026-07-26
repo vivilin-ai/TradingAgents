@@ -514,6 +514,7 @@ print(decision)
 | `llm_provider` | `"openai"` | `TRADINGAGENTS_LLM_PROVIDER` | LLM provider |
 | `deep_think_llm` | `"gpt-5.4"` | `TRADINGAGENTS_DEEP_THINK_LLM` | Model for reasoning |
 | `quick_think_llm` | `"gpt-5.4-mini"` | `TRADINGAGENTS_QUICK_THINK_LLM` | Model for fast tasks |
+| `llm_temperature` | `0` | `TRADINGAGENTS_LLM_TEMPERATURE` | Sampling temperature; 0 keeps re-runs of the same ticker and date reproducible. Omitted for reasoning models, which fix it internally |
 | `output_language` | `"Chinese"` | — | Report language |
 | `reports_root` | `"reports"` | `TRADINGAGENTS_REPORTS_ROOT` | Report root directory |
 | `watchlist_path` | `~/.tradingagents/watchlist.yaml` | `TRADINGAGENTS_WATCHLIST_PATH` | Watchlist file |
