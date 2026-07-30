@@ -207,6 +207,13 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
+# macOS Finder metadata
+.DS_Store
+
+# CLI-generated analysis output (reports_root default); never source, always
+# reproducible from a re-run.
+/reports/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/
