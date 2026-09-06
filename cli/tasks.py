@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime, time, timedelta
 from typing import Optional
 
 import typer
@@ -75,6 +76,58 @@ def _describe_schedule(schedule: str) -> str:
         return f"每{_DAY_LABEL.get(int(dow), dow)} {time_str}"
     except ValueError:
         return schedule
+
+
+def _last_expected_fire(schedule: str, now: datetime) -> Optional[datetime]:
+    """Most recent datetime <= ``now`` this schedule should have fired at.
+
+    Only understands the subset of cron this tool generates: an exact
+    minute and hour, "*" for day-of-month and month, and day-of-week as
+    "*", a single digit, or a "start-end" range (0=Sunday, matching this
+    project's convention). Returns None for anything else, so callers skip
+    the check rather than guess wrong about an advanced --schedule expression.
+
+    This exists because "the task last exited 0" and "the log has no new
+    content" both describe a task that silently never fired — the machine
+    was asleep, or macOS quietly revoked its background-run permission —
+    as easily as they describe a task that ran and produced no output.
+    Comparing the schedule against the clock tells the two apart.
+    """
+    parts = schedule.strip().split()
+    if len(parts) != 5:
+        return None
+    minute_s, hour_s, dom, month, dow_s = parts
+    if dom != "*" or month != "*":
+        return None
+    try:
+        minute, hour = int(minute_s), int(hour_s)
+    except ValueError:
+        return None
+
+    if dow_s == "*":
+        allowed_dow = set(range(7))
+    elif "-" in dow_s:
+        try:
+            start, end = (int(x) for x in dow_s.split("-"))
+        except ValueError:
+            return None
+        allowed_dow = set(range(start, end + 1))
+    else:
+        try:
+            allowed_dow = {int(dow_s)}
+        except ValueError:
+            return None
+
+    for offset in range(8):
+        candidate_date: date = (now - timedelta(days=offset)).date()
+        # cron/this project: 0=Sunday..6=Saturday. date.weekday(): 0=Monday..6=Sunday.
+        cron_dow = (candidate_date.weekday() + 1) % 7
+        if cron_dow not in allowed_dow:
+            continue
+        candidate = datetime.combine(candidate_date, time(hour=hour, minute=minute))
+        if candidate <= now:
+            return candidate
+    return None
 
 
 @app.command("list")
@@ -397,18 +450,25 @@ def doctor_cmd(
 
     # ── 3. 运行日志 ───────────────────────────────────────────────────────────
     console.print(f"\n[bold]3. 运行日志[/bold] [dim]({_LOG_DIR})[/dim]")
-    import datetime as _dt
     import re as _re
+
+    now = datetime.now()
+    # A run can take well over an hour (retries, rate limits), so only flag a
+    # missed fire once this much time has passed — otherwise a task that is
+    # still mid-run gets reported as never having started at all.
+    missed_fire_grace = timedelta(hours=2)
 
     any_log = False
     for t in tasks:
         texts: list[str] = []
+        task_mtimes: list[datetime] = []
         for suffix in ("", "_error"):
             log = _LOG_DIR / f"{t.name}{suffix}.log"
             if not log.exists() or log.stat().st_size == 0:
                 continue
             any_log = True
-            mtime = _dt.datetime.fromtimestamp(log.stat().st_mtime)
+            mtime = datetime.fromtimestamp(log.stat().st_mtime)
+            task_mtimes.append(mtime)
             console.print(f"\n  [cyan]{log.name}[/cyan] [dim](最后写入 {mtime:%Y-%m-%d %H:%M})[/dim]")
             text = log.read_text(encoding="utf-8", errors="replace")
             # Slice per file: the run marker is logged to stderr while the
@@ -419,6 +479,29 @@ def doctor_cmd(
                 console.print(f"    {line}", markup=False, highlight=False)
         if texts:
             problems.extend(_scan_log_problems(t.name, "\n".join(texts), _re))
+
+        # A schedule that should have fired more than `missed_fire_grace` ago,
+        # with no log activity since, means launchd never started the job —
+        # the Mac was likely asleep/off, or macOS silently revoked its
+        # background-run permission. That is a different failure from "it ran
+        # and errored", and the content scan above cannot tell them apart.
+        expected = _last_expected_fire(t.schedule, now)
+        if expected is not None and now - expected > missed_fire_grace:
+            last_activity = max(task_mtimes) if task_mtimes else None
+            if last_activity is None or last_activity < expected:
+                when = f"{expected:%Y-%m-%d %H:%M}（{_describe_schedule(t.schedule)}）"
+                if last_activity is None:
+                    gap = "但从未见过任何执行日志"
+                else:
+                    gap = f"但日志最后活动是 {last_activity:%Y-%m-%d %H:%M}，之后再无任何记录"
+                msg = (
+                    f"'{t.name}' 本应在 {when} 触发，{gap} —— 这是 launchd 没有按计划"
+                    "启动任务（电脑当时休眠/关机，或系统在「登录项与扩展→允许在后台」"
+                    "中关闭了该任务），不是脚本报错"
+                )
+                console.print(f"  [red]✗ {msg}[/red]")
+                problems.append(msg)
+
     if not any_log:
         console.print("  [yellow]⚠ 没有任何日志内容 —— 任务可能从未真正启动过[/yellow]")
         problems.append(
