@@ -132,6 +132,26 @@ def test_current_fd_exhaustion_and_poisoned_cache_are_reported():
     assert "价格缓存" in out
 
 
+def test_connection_error_from_openai_sdk_is_reported():
+    # openai.APIConnectionError's default __str__ is exactly "Connection error."
+    text = "scheduled-run: weekly\nopenai.APIConnectionError: Connection error.\n"
+    out = joined(scan(text))
+    assert "代理" in out
+
+
+def test_proxy_refused_is_reported():
+    text = (
+        "scheduled-run: weekly\n"
+        "requests.exceptions.ProxyError: HTTPSConnectionPool(host='api.deepseek.com', "
+        "port=443): Max retries exceeded with url: /chat/completions "
+        "(Caused by ProxyError('Unable to connect to proxy', "
+        "NewConnectionError('Failed to establish a new connection: [Errno 61] "
+        "Connection refused')))\n"
+    )
+    out = joined(scan(text))
+    assert "代理" in out
+
+
 def test_clean_log_reports_nothing():
     text = "scheduled-run: weekly\n📊 定时任务完成：weekly\n✅ 11/11 完成\n"
     assert scan(text) == []

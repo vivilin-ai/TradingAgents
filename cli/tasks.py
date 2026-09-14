@@ -299,6 +299,12 @@ def _scan_log_problems(task_name: str, text: str, _re) -> list[str]:
          "yfinance 本地数据库无法打开（通常伴随文件描述符耗尽或权限问题）"),
         (r"429|rate.?limit|RateLimit",
          "触发 API 限速 —— 避免多个任务同时运行，或调低 batch_max_workers"),
+        (r"Connection error\.|ProxyError|Failed to establish a new connection|"
+         r"APIConnectionError|Max retries exceeded",
+         "模型/网络连接失败（Connection error）—— 内部已自动重试 3 次仍失败，"
+         "通常是本地代理（如 ClashX）没有在后台任务触发的时刻正常运行："
+         "代理软件未设置为常驻/开机自启，或电脑睡眠唤醒后代理进程没有恢复。"
+         "手动在终端跑 tradingagents analyze 能成功、但定时任务失败，是这个原因的典型信号"),
         (r"Traceback \(most recent call last\)",
          "日志中存在未捕获异常的 traceback，需要查看上方完整堆栈"),
     ]
