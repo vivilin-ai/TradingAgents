@@ -160,17 +160,31 @@ def extract_reason(pm_decision: str, max_chars: int = 500) -> str:
     return cut.rsplit(" ", 1)[0].rstrip("，。,") + "…"
 
 
-# ── Rate-limit detection ──────────────────────────────────────────────────────
+# ── Backoff detection ──────────────────────────────────────────────────────────
+# Failures that call for the same remedy: reduce concurrency and wait longer
+# before retrying, rather than retrying immediately at the same load.
 
 _RATE_LIMIT_KEYWORDS = (
     "429", "rate limit", "too many requests", "ratelimit",
     "rate_limit", "quota", "capacity", "overloaded",
 )
 
+# A provider or an intermediate proxy under too much concurrent load often
+# drops or refuses connections instead of returning a clean 429 — from the
+# caller's side that is indistinguishable from rate limiting and responds to
+# the same fix. openai.APIConnectionError's own default message is exactly
+# "Connection error." (no further detail), so that exact phrase is included.
+_CONNECTION_ERROR_KEYWORDS = (
+    "connection error", "connection reset", "connection refused",
+    "proxyerror", "remote end closed connection", "apiconnectionerror",
+)
 
-def _is_rate_limit(error: str) -> bool:
+
+def _needs_backoff(error: str) -> bool:
     low = error.lower()
-    return any(kw in low for kw in _RATE_LIMIT_KEYWORDS)
+    return any(
+        kw in low for kw in _RATE_LIMIT_KEYWORDS + _CONNECTION_ERROR_KEYWORDS
+    )
 
 
 # ── BatchRunner ───────────────────────────────────────────────────────────────
@@ -232,7 +246,7 @@ class BatchRunner:
         task_name: Optional[str] = None,
         narrative: bool = True,
         on_ticker_done: Optional[Callable[[dict], None]] = None,
-        on_rate_limit: Optional[Callable[[list[str], int, int, int], None]] = None,
+        on_backoff: Optional[Callable[[list[str], int, int, int], None]] = None,
         on_complete: Optional[Callable[[list[dict], Path], None]] = None,
     ) -> tuple[list[dict[str, Any]], Path]:
         """Analyse multiple tickers with parallel execution and auto-retry.
@@ -245,8 +259,11 @@ class BatchRunner:
             narrative:      Include LLM cross-ticker narrative in summary.
             on_ticker_done: Called immediately after each ticker finishes
                             (success or failure).
-            on_rate_limit:  Called when rate-limiting is detected with
-                            (failed_tickers, old_workers, new_workers, wait_s).
+            on_backoff:     Called when a rate limit or a connection-level
+                            failure (proxy/provider dropping connections under
+                            load — indistinguishable from rate limiting from
+                            here) is detected, with (failed_tickers,
+                            old_workers, new_workers, wait_s).
             on_complete:    Called with (results, summary_path) at the very end.
 
         Returns:
@@ -321,33 +338,34 @@ class BatchRunner:
             if not failed:
                 break
 
-            rate_limited = [r for r in failed if _is_rate_limit(r.get("error", ""))]
+            backoff_tickers = [r for r in failed if _needs_backoff(r.get("error", ""))]
             retry_tickers = [r["ticker"] for r in failed]
 
-            if rate_limited:
+            if backoff_tickers:
                 # Reduce concurrency and wait before retrying
                 old_workers = max_workers
                 max_workers = max(1, max_workers - 1)
                 wait_s = retry_wait * (2 ** (attempt - 1))   # 30s → 60s
 
                 logger.warning(
-                    "Rate limit on attempt %d — workers %d→%d, waiting %ds, retrying: %s",
+                    "Rate limit or connection failure on attempt %d — workers %d→%d, "
+                    "waiting %ds, retrying: %s",
                     attempt, old_workers, max_workers, wait_s,
-                    ", ".join(r["ticker"] for r in rate_limited),
+                    ", ".join(r["ticker"] for r in backoff_tickers),
                 )
-                if on_rate_limit:
+                if on_backoff:
                     try:
-                        on_rate_limit(
-                            [r["ticker"] for r in rate_limited],
+                        on_backoff(
+                            [r["ticker"] for r in backoff_tickers],
                             old_workers, max_workers, wait_s,
                         )
                     except Exception as exc:
-                        logger.warning("on_rate_limit raised: %s", exc)
+                        logger.warning("on_backoff raised: %s", exc)
                 time.sleep(wait_s)
             else:
-                # Non-rate-limit failure: short pause then retry
+                # Failure unrelated to load: short pause then retry
                 logger.info(
-                    "Retry attempt %d/%d (non-rate-limit) for: %s",
+                    "Retry attempt %d/%d (no backoff needed) for: %s",
                     attempt, max_retries, ", ".join(retry_tickers),
                 )
                 time.sleep(5)

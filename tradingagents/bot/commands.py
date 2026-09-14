@@ -170,10 +170,10 @@ def cmd_batch(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> N
         lines.append(f"\n报告：{summary_path}")
         bot.send_plain(chat_id, "\n".join(lines))
 
-    def on_rate_limit_update(failed_tickers, old_w, new_w, wait_s):
+    def on_backoff_update(failed_tickers, old_w, new_w, wait_s):
         bot.send_plain(
             chat_id,
-            f"⚠️ 检测到 API 限速\n"
+            f"⚠️ 检测到限速或连接问题\n"
             f"受影响：{', '.join(failed_tickers)}\n"
             f"并发数：{old_w} → {new_w}\n"
             f"等待 {wait_s} 秒后自动重试…"
@@ -184,7 +184,7 @@ def cmd_batch(bot: "TelegramBot", message: dict[str, Any], args: list[str]) -> N
             trade_date=date_str,
             mode="batch",
             on_ticker_done=on_ticker_update,
-            on_rate_limit=on_rate_limit_update,
+            on_backoff=on_backoff_update,
         )
         return results, summary_path
 
