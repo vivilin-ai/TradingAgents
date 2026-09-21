@@ -1386,6 +1386,99 @@ def evaluate(
         console.print(f"\n[dim]记分卡：[/dim]{result['report_path']}")
 
 
+@app.command("cost-report")
+def cost_report(
+    ticker: Optional[str] = typer.Option(
+        None, "--ticker", help="用于展示历史上下文注入量的样本股票；默认取台账里最近分析的一支"
+    ),
+    weeks: int = typer.Option(8, "--weeks", help="显示最近几周的数据"),
+):
+    """排查每周定时任务 token 消耗为什么在上升。
+
+    分别量化几个真正会推高消耗的因素：每周实际分析的股票数（台账统计，
+    不是猜测）、注入每次 LLM 调用的历史上下文/经验/校准块大小（是否已经
+    到达上限）、以及最近几周因连接失败触发的重试次数（每次重试等于把该
+    股票的完整 agent 流水线重新跑一遍，是最直接的额外花费来源）。
+    """
+    from tradingagents.eval.cost_report import build_report
+
+    config = DEFAULT_CONFIG.copy()
+    report = build_report(config, sample_ticker=ticker)
+
+    console.print("\n[bold]1. 每周实际分析的股票数（来自结算台账，反映自选列表规模变化）[/bold]")
+    weekly = report["weekly_tickers"]
+    if not weekly:
+        console.print("  [yellow]台账为空，无法统计[/yellow]")
+    else:
+        for week, count in list(weekly.items())[-weeks:]:
+            console.print(f"  {week}: {count} 支")
+        values = list(weekly.values())
+        if len(values) >= 2 and values[-1] > values[0]:
+            console.print(
+                f"  [yellow]⚠ 股票数从 {values[0]} 增长到 {values[-1]} —— "
+                "这会线性增加每周总花费，属正常影响因素，不是缺陷[/yellow]"
+            )
+
+    console.print("\n[bold]2. 每次 LLM 调用注入的历史上下文大小[/bold]")
+    ctx = report["context"]
+    if not ctx:
+        console.print("  [yellow]台账为空，无法计算[/yellow]")
+    else:
+        console.print(f"  样本股票：{ctx['sample_ticker']}")
+        same_state = "已达上限，不会再增长" if ctx["same_ticker_at_cap"] else "仍在增长中"
+        console.print(
+            f"  同股票历史（进 Portfolio Manager 提示词）："
+            f"{ctx['same_ticker_entries_used']}/{ctx['same_ticker_cap']} 条 "
+            f"（{ctx['past_context_chars']} 字符，约 {ctx['past_context_tokens_est']} token）"
+            f" —— {same_state}"
+        )
+        lessons_state = "已达上限，不会再增长" if ctx["lessons_at_cap"] else "仍在增长中"
+        console.print(
+            f"  精选经验池（进多空研究员/Research Manager 提示词）："
+            f"{ctx['lessons_count']}/{ctx['lessons_cap']} 条 "
+            f"（{ctx['lessons_chars']} 字符，约 {ctx['lessons_tokens_est']} token）"
+            f" —— {lessons_state}"
+        )
+        if ctx["calibration_active"]:
+            console.print(
+                f"  校准块（进多空研究员/Research Manager/PM 提示词）：已启用 "
+                f"（{ctx['calibration_chars']} 字符，约 {ctx['calibration_tokens_est']} token）"
+            )
+        else:
+            console.print("  校准块：尚未启用（样本量不足）")
+        if not ctx["same_ticker_at_cap"] or not ctx["lessons_at_cap"]:
+            console.print(
+                "  [dim]以上两项达到上限前，每周会持续小幅增加 token 消耗，"
+                "属预期内的一次性爬升，到达上限后会走平。[/dim]"
+            )
+
+    console.print(f"\n[bold]3. 最近 {weeks} 周因连接失败触发的重试[/bold]")
+    retries = report["retries"]
+    if not retries:
+        console.print("  [green]未在日志中发现重试记录[/green]")
+    else:
+        recent = list(retries.items())[-weeks:]
+        total_retried = sum(v["retried_tickers"] for _, v in recent)
+        for week, v in recent:
+            if v["retried_tickers"] or v["hard_failures"]:
+                console.print(
+                    f"  {week}: {v['retried_tickers']} 次股票级重试、"
+                    f"{v['hard_failures']} 次报错"
+                )
+        if total_retried:
+            console.print(
+                f"  [yellow]⚠ 近 {weeks} 周共 {total_retried} 次股票级重试 —— "
+                "每次重试都是把该股票的完整 agent 流水线（十几次 LLM 调用）重新跑一遍，"
+                "通常是近期消耗上升里最大的一块。日志越靠后重试次数越多，"
+                "说明网络/代理稳定性在变差，值得优先处理。[/yellow]"
+            )
+
+    console.print(
+        "\n[dim]结论优先级建议：先看第 3 项（重试），量级通常远大于第 2 项的"
+        "上下文爬升；第 1 项若股票数确实增加了，是最直接、最好核实的原因。[/dim]"
+    )
+
+
 @app.command("recheck-ratings")
 def recheck_ratings(
     since: Optional[str] = typer.Option(None, "--since", help="只检查该日期(YYYY-MM-DD)之后的决策"),

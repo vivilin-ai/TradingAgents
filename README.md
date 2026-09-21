@@ -431,6 +431,15 @@ tradingagents recheck-ratings --apply --include-uncertain   # also inferred ones
 tradingagents evaluate                # settle + scorecard + calibration
 tradingagents evaluate --no-reflect   # skip LLM reflections (settlement only)
 
+# Diagnose why weekly token spend is trending up (offline, no tokens):
+# tickers analysed per week (watchlist growth), current size of the bounded
+# history/lessons/calibration context injected into every LLM call and
+# whether it has already hit its cap, and retry counts parsed from the
+# scheduler logs — a retried ticker re-runs its entire agent pipeline, so
+# retries are usually the largest and most volatile cost driver.
+tradingagents cost-report
+tradingagents cost-report --ticker NVDA --weeks 12
+
 # Recommended weekly schedule: evaluate at 07:30, batch analysis at 08:00
 tradingagents tasks add weekly_eval --evaluate --day Saturday --time 07:30
 tradingagents tasks add weekly_all --watchlist --day Saturday --time 08:00
