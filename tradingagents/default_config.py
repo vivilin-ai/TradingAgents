@@ -31,6 +31,16 @@ DEFAULT_CONFIG = {
     # models, which fix temperature internally.
     "llm_temperature": float(os.getenv("TRADINGAGENTS_LLM_TEMPERATURE", "0")),
 
+    # Disables HTTP keep-alive for LLM API calls: every request opens a fresh
+    # connection instead of reusing one from httpx's pool. Fixes intermittent
+    # "Connection error." (httpcore.RemoteProtocolError: peer closed
+    # connection without sending complete message body) seen on some proxy
+    # setups, where a pooled connection is silently killed between requests
+    # but still looks alive to httpx's local keepalive_expiry clock, then
+    # fails when reused. Off by default since it adds a TCP+TLS handshake
+    # per call; turn on only if you're seeing this specific error.
+    "llm_disable_keepalive": os.getenv("TRADINGAGENTS_LLM_DISABLE_KEEPALIVE", "false").lower() in ("1", "true", "yes"),
+
     # Provider-specific thinking configuration
     "google_thinking_level": None,      # "high", "minimal", etc.
     "openai_reasoning_effort": None,    # "medium", "high", "low"

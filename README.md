@@ -525,6 +525,7 @@ print(decision)
 | `quick_think_llm` | `"gpt-5.4-mini"` | `TRADINGAGENTS_QUICK_THINK_LLM` | Model for fast tasks |
 | `require_structured_output` | `True` | — | Decision agents must return a schema-validated decision. On failure the run errors out instead of falling back to free text — see below |
 | `llm_temperature` | `0` | `TRADINGAGENTS_LLM_TEMPERATURE` | Sampling temperature; 0 keeps re-runs of the same ticker and date reproducible. Omitted for reasoning models, which fix it internally |
+| `llm_disable_keepalive` | `False` | `TRADINGAGENTS_LLM_DISABLE_KEEPALIVE` | Forces a fresh connection per LLM call instead of reusing one from the pool. Fixes intermittent `Connection error.` on some proxy setups — see below |
 | `output_language` | `"Chinese"` | — | Report language |
 | `reports_root` | `"reports"` | `TRADINGAGENTS_REPORTS_ROOT` | Report root directory |
 | `watchlist_path` | `~/.tradingagents/watchlist.yaml` | `TRADINGAGENTS_WATCHLIST_PATH` | Watchlist file |
@@ -559,6 +560,34 @@ not use it for advice you intend to act on.
 Reproducibility: `llm_temperature` defaults to `0`, so re-running the same
 ticker and date returns the same decision. Analyst inputs are still fetched
 live, so results can differ if the underlying news or prices have changed.
+
+---
+
+## Intermittent "Connection error." (proxy setups)
+
+If scheduled runs behind a local HTTP proxy (e.g. ClashX) intermittently fail
+with `Connection error.` on some tickers while others in the same run
+succeed — and the same request via `curl` through the same proxy never
+fails — the cause is almost always connection reuse, not the proxy itself:
+
+- The LLM client (httpx, via the OpenAI SDK) pools TCP connections and keeps
+  them alive for a few seconds after each call, so a ticker's later calls in
+  the same pipeline often reuse a connection from an earlier call rather than
+  opening a new one.
+- If something on the proxy/network path silently closes that connection in
+  between calls, httpx doesn't know yet — the connection still looks alive
+  by its own local keepalive clock — so it hands the dead connection to the
+  next request, which then fails partway through reading the response
+  (`peer closed connection without sending complete message body`), coming
+  through as `openai.APIConnectionError: Connection error.`.
+- `curl` never reuses a connection across separate invocations, so it can't
+  reproduce this failure even when run repeatedly through the same proxy.
+
+Setting `llm_disable_keepalive: True` (or `TRADINGAGENTS_LLM_DISABLE_KEEPALIVE=1`)
+makes every LLM call open and close its own connection, matching `curl`'s
+behavior. It costs one extra TCP+TLS handshake per call, so it's opt-in
+rather than the default — enable it only if you're actually seeing this
+error.
 
 ---
 

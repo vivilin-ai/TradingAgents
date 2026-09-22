@@ -144,6 +144,11 @@ class TradingAgentsGraph:
         if temperature is not None:
             kwargs["temperature"] = float(temperature)
 
+        if self.config.get("llm_disable_keepalive"):
+            http_client, http_async_client = TradingAgentsGraph._build_no_keepalive_http_clients()
+            kwargs["http_client"] = http_client
+            kwargs["http_async_client"] = http_async_client
+
         if provider == "google":
             thinking_level = self.config.get("google_thinking_level")
             if thinking_level:
@@ -160,6 +165,23 @@ class TradingAgentsGraph:
                 kwargs["effort"] = effort
 
         return kwargs
+
+    @staticmethod
+    def _build_no_keepalive_http_clients():
+        """Build httpx clients that never reuse a connection across requests.
+
+        Mirrors the OpenAI SDK's own default httpx client (follow_redirects,
+        trust_env for the HTTP_PROXY/HTTPS_PROXY env vars a local proxy like
+        ClashX relies on) but with max_keepalive_connections=0, so every
+        request gets a fresh TCP+TLS handshake instead of a pooled connection
+        that may have been silently closed by the network path in between.
+        """
+        import httpx
+
+        limits = httpx.Limits(max_keepalive_connections=0)
+        http_client = httpx.Client(limits=limits, follow_redirects=True)
+        http_async_client = httpx.AsyncClient(limits=limits, follow_redirects=True)
+        return http_client, http_async_client
 
     def _create_tool_nodes(self) -> Dict[str, ToolNode]:
         """Create tool nodes for different data sources using abstract methods."""
